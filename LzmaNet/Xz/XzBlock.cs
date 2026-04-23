@@ -269,7 +269,12 @@ internal static class XzBlock
         // Try progressively larger slices of allData as LZMA2 input.
         // The LZMA2 decoder will stop at the 0x00 end marker and tell us how much it consumed.
         using var decoder = new Lzma2Decoder(dictSize);
-        int capacity = Math.Max(allData.Length * 4, 65536);
+        long knownUncompSize = expectedUncompSize >= 0
+            ? expectedUncompSize
+            : TryGetTotalUncompressedSize(allData, checkType);
+        int capacity = knownUncompSize > 0 && knownUncompSize <= int.MaxValue
+            ? (int)knownUncompSize
+            : Math.Max(allData.Length * 4, 65536);
         byte[] decompBuf = ArrayPool<byte>.Shared.Rent(capacity);
         int decompressed;
         try
@@ -428,15 +433,7 @@ internal static class XzBlock
                 Crc64.WriteLE(data, checkBuf);
                 break;
             case XzConstants.CheckSha256:
-#if NET5_0_OR_GREATER
                 SHA256.HashData(data, checkBuf);
-#else
-                using (var sha = SHA256.Create())
-                {
-                    byte[] hashBytes = sha.ComputeHash(data.ToArray());
-                    hashBytes.AsSpan(0, checkBuf.Length).CopyTo(checkBuf);
-                }
-#endif
                 break;
             default:
                 checkBuf.Clear(); // Unknown check — write zeros
@@ -462,21 +459,52 @@ internal static class XzBlock
                 break;
             case XzConstants.CheckSha256:
                 Span<byte> hash = stackalloc byte[32];
-#if NET5_0_OR_GREATER
                 SHA256.HashData(data, hash);
-#else
-                using (var sha = SHA256.Create())
-                {
-                    byte[] hashBytes = sha.ComputeHash(data.ToArray());
-                    hashBytes.AsSpan(0, 32).CopyTo(hash);
-                }
-#endif
                 if (!hash.SequenceEqual(expected[..32]))
                     throw new LzmaDataErrorException("XZ block SHA-256 check failed.");
                 break;
             default:
                 // Unknown check type — skip verification
                 break;
+        }
+    }
+
+    /// <summary>
+    /// Tries to determine the total uncompressed size from the XZ index and footer
+    /// embedded at the end of <paramref name="allData"/>.
+    /// Returns -1 if the size cannot be determined.
+    /// </summary>
+    private static long TryGetTotalUncompressedSize(byte[] allData, int checkType)
+    {
+        const int footerSize = XzConstants.StreamFooterSize;
+        if (allData.Length < footerSize)
+            return -1;
+
+        try
+        {
+            var footer = allData.AsSpan(allData.Length - footerSize, footerSize);
+            long indexSize = XzHeader.ReadStreamFooter(footer, checkType);
+
+            long indexStartLong = (long)allData.Length - footerSize - indexSize;
+            if (indexStartLong < 0 || indexStartLong > int.MaxValue)
+                return -1;
+
+            int indexStart = (int)indexStartLong;
+            if (allData[indexStart] != 0x00)
+                return -1; // Not a valid index indicator
+
+            using var ms = new MemoryStream(allData, writable: false);
+            ms.Seek(indexStart + 1, SeekOrigin.Begin);
+            XzIndex.ReadIndex(ms, out var records);
+
+            long total = 0;
+            foreach (var (_, uncompressedSize) in records)
+                total += uncompressedSize;
+            return total;
+        }
+        catch
+        {
+            return -1;
         }
     }
 

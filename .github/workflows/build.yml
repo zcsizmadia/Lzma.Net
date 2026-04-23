@@ -1,4 +1,4 @@
-name: Build & Test
+name: Build & Pack
 
 on:
   push:
@@ -15,28 +15,52 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            arch: x64
-          - os: ubuntu-24.04-arm
-            arch: arm64
-          - os: windows-latest
-            arch: x64
-          - os: windows-11-arm
-            arch: arm64
-          - os: macos-latest
-            arch: arm64
-          - os: macos-13
-            arch: x64
+          - os: windows-latest    # Windows x64
+            rid: win-x64
+
+          - os: windows-11-arm    # Windows ARM64
+            rid: win-arm64
+
+          - os: ubuntu-latest     # Linux x64
+            rid: linux-x64
+
+          - os: ubuntu-24.04-arm  # Linux ARM64
+            rid: linux-arm64
+
+          - os: ubuntu-latest     # Alpine Linux x64 (musl)
+            rid: linux-musl-x64
+            container: alpine:latest
+  
+          - os: ubuntu-24.04-arm  # Alpine Linux ARM64 (musl)
+            rid: linux-musl-arm64
+            container: alpine:latest
+
+          - os: macos-latest      # macOS x64
+            rid: osx-x64
 
     runs-on: ${{ matrix.os }}
-    name: ${{ matrix.os }} (${{ matrix.arch }})
+    container: ${{ matrix.container }} # If evaluates to 'null' for they run on the host
+    name: build (${{ matrix.rid }})
 
     steps:
+      # action/checkout fails on Alpine Arm64 without this fix
+      - name: Fix Alpine arm64 compatibility
+        if: matrix.rid == 'linux-musl-arm64'
+        uses: laverdet/alpine-arm64@v1
+
       - uses: actions/checkout@v4
+
+      - name: Install packages
+        shell: sh
+        run: |
+          if [ -f /etc/alpine-release ]; then
+            apk add --no-cache bash icu xz
+          fi
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
+          # Testing in CI runs on all supported .NET versions to ensure compatibility.
           dotnet-version: |
             8.0.x
             9.0.x
@@ -49,7 +73,7 @@ jobs:
         run: dotnet build -c Release --no-restore
 
       - name: Test
-        run: dotnet test -c Release --no-restore
+        run: dotnet test -c Release --no-build
 
   pack:
     needs: build
@@ -65,11 +89,10 @@ jobs:
           dotnet-version: 10.0.x
 
       - name: Pack
-        run: dotnet pack LzmaNet -c Release -o artifacts
+        run: dotnet pack LzmaNet -c Release -o nupkgs
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
           name: nuget-package
-          path: artifacts/*.nupkg
-          retention-days: 30
+          path: nupkgs/*.nupkg

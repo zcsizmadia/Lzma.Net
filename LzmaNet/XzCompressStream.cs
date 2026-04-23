@@ -92,11 +92,7 @@ public sealed class XzCompressStream : Stream
     /// <inheritdoc/>
     public override void Write(ReadOnlySpan<byte> buffer)
     {
-#if NET7_0_OR_GREATER
         ObjectDisposedException.ThrowIf(_disposed, this);
-#else
-        if (_disposed) throw new ObjectDisposedException(GetType().FullName);
-#endif
         if (_finished)
             throw new InvalidOperationException("Stream has been finalized.");
 
@@ -125,11 +121,7 @@ public sealed class XzCompressStream : Stream
     /// <inheritdoc/>
     public override void Flush()
     {
-#if NET7_0_OR_GREATER
         ObjectDisposedException.ThrowIf(_disposed, this);
-#else
-        if (_disposed) throw new ObjectDisposedException(GetType().FullName);
-#endif
         _baseStream.Flush();
     }
 
