@@ -15,13 +15,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-          - os: ubuntu-24.04-arm
-          - os: windows-latest
-          - os: windows-11-arm
-          - os: macos-latest
+          - os: ubuntu-latest     # Linux x64
+          - os: ubuntu-24.04-arm  # Linux ARM64
+          - os: windows-latest    # Windows x64
+          - os: windows-11-arm    # Windows ARM64
+          - os: macos-latest      # macOS x64
+          - os: ubuntu-latest     # Alpine Linux x64 (musl)
+            container: mcr.microsoft.com/dotnet/sdk:10.0-alpine
 
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }} # If evaluates to 'null' for they run on the host
 
     steps:
       - uses: actions/checkout@v4
