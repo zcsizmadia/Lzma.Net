@@ -16,16 +16,13 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            arch: x64
           - os: ubuntu-24.04-arm
-            arch: arm64
           - os: windows-latest
-            arch: x64
           - os: windows-11-arm
-            arch: arm64
+          - os: macos-latest
+          - os: macos-14-arm
 
     runs-on: ${{ matrix.os }}
-    name: ${{ matrix.os }} (${{ matrix.arch }})
 
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +30,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
+          # Testing in CI runs on all supported .NET versions to ensure compatibility.
           dotnet-version: |
             8.0.x
             9.0.x
