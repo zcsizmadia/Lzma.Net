@@ -305,11 +305,10 @@ public class XzInteropTests
         byte[] xzDecompressed = XzDecompress(ourCompressed);
         Assert.Equal(original, xzDecompressed);
 
-        // !!! FIXME in Linux !!!
         // xz compress → our decompress
-        //byte[] xzCompressed = XzCompress(original);
-        //byte[] ourDecompressed = XzCompressor.Decompress(xzCompressed);
-        //Assert.Equal(original, ourDecompressed);
+        byte[] xzCompressed = XzCompress(original);
+        byte[] ourDecompressed = XzCompressor.Decompress(xzCompressed);
+        Assert.Equal(original, ourDecompressed);
     }
 
     [Fact]
