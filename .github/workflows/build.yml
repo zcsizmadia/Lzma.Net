@@ -38,6 +38,11 @@ jobs:
     name: build (${{ matrix.rid }})
 
     steps:
+      # action/checkout fails on Alpine Arm64 without this fix
+      - name: Fix Alpine arm64 compatibility
+        if: matrix.rid == 'linux-musl-arm64'
+        uses: laverdet/alpine-arm64@v1
+
       - uses: actions/checkout@v4
 
       - name: Install packages
