@@ -269,7 +269,12 @@ internal static class XzBlock
         // Try progressively larger slices of allData as LZMA2 input.
         // The LZMA2 decoder will stop at the 0x00 end marker and tell us how much it consumed.
         using var decoder = new Lzma2Decoder(dictSize);
-        int capacity = Math.Max(allData.Length * 4, 65536);
+        long knownUncompSize = expectedUncompSize >= 0
+            ? expectedUncompSize
+            : TryGetTotalUncompressedSize(allData, checkType);
+        int capacity = knownUncompSize > 0 && knownUncompSize <= int.MaxValue
+            ? (int)knownUncompSize
+            : Math.Max(allData.Length * 4, 65536);
         byte[] decompBuf = ArrayPool<byte>.Shared.Rent(capacity);
         int decompressed;
         try
@@ -477,6 +482,45 @@ internal static class XzBlock
             default:
                 // Unknown check type — skip verification
                 break;
+        }
+    }
+
+    /// <summary>
+    /// Tries to determine the total uncompressed size from the XZ index and footer
+    /// embedded at the end of <paramref name="allData"/>.
+    /// Returns -1 if the size cannot be determined.
+    /// </summary>
+    private static long TryGetTotalUncompressedSize(byte[] allData, int checkType)
+    {
+        const int footerSize = XzConstants.StreamFooterSize;
+        if (allData.Length < footerSize)
+            return -1;
+
+        try
+        {
+            var footer = allData.AsSpan(allData.Length - footerSize, footerSize);
+            long indexSize = XzHeader.ReadStreamFooter(footer, checkType);
+
+            long indexStartLong = (long)allData.Length - footerSize - indexSize;
+            if (indexStartLong < 0 || indexStartLong > int.MaxValue)
+                return -1;
+
+            int indexStart = (int)indexStartLong;
+            if (allData[indexStart] != 0x00)
+                return -1; // Not a valid index indicator
+
+            using var ms = new MemoryStream(allData, writable: false);
+            ms.Seek(indexStart + 1, SeekOrigin.Begin);
+            XzIndex.ReadIndex(ms, out var records);
+
+            long total = 0;
+            foreach (var (_, uncompressedSize) in records)
+                total += uncompressedSize;
+            return total;
+        }
+        catch
+        {
+            return -1;
         }
     }
 

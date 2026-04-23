@@ -1,4 +1,4 @@
-name: Build & Test
+name: Build & Pack
 
 on:
   push:
@@ -20,7 +20,6 @@ jobs:
           - os: windows-latest
           - os: windows-11-arm
           - os: macos-latest
-          - os: macos-14-arm
 
     runs-on: ${{ matrix.os }}
 
