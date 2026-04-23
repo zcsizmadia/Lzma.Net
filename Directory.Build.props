@@ -1,6 +1,10 @@
 <Project>
 
   <PropertyGroup>
+    <Version>5.8.3.1</Version>
+  </PropertyGroup>
+
+  <PropertyGroup>
     <DefaultTargetFrameworks>net8.0;net9.0;net10.0</DefaultTargetFrameworks>
     <DefaultTargetFramework>net10.0</DefaultTargetFramework>
   </PropertyGroup>
@@ -21,11 +25,7 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-  </PropertyGroup>
-
-
-  <PropertyGroup>
-    <Version>5.8.3.1</Version>
+    <IsPackable>false</IsPackable>
   </PropertyGroup>
 
 </Project>

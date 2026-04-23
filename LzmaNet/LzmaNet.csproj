@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <TargetFrameworks>$(ClassLibTargetFrameworks)</TargetFrameworks>
+    <IsPackable>true</IsPackable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
 
