@@ -1,4 +1,4 @@
-# LzmaNet
+# Lzma.Net
 
 A **native C# implementation** of the XZ/LZMA2/LZMA compression format. No native binaries, no P/Invoke, no liblzma dependency — just pure managed C# code that runs anywhere .NET runs.
 
@@ -14,7 +14,7 @@ A **native C# implementation** of the XZ/LZMA2/LZMA compression format. No nativ
 - **Extreme mode** — equivalent to `xz -e`, spends more CPU time for better compression
 - **Integrity checks** — CRC32, CRC64, or no check
 - **Zero-copy design** — uses `Span<T>`, `ReadOnlySpan<T>`, `ArrayPool<T>`, and `stackalloc` throughout
-- **.NET Standard 2.1 / .NET 8 / 9 / 10** — multi-target support
+- **.NET 8 / 9 / 10** — multi-target support
 
 ## Installation
 
