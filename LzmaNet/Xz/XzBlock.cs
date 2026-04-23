@@ -433,15 +433,7 @@ internal static class XzBlock
                 Crc64.WriteLE(data, checkBuf);
                 break;
             case XzConstants.CheckSha256:
-#if NET5_0_OR_GREATER
                 SHA256.HashData(data, checkBuf);
-#else
-                using (var sha = SHA256.Create())
-                {
-                    byte[] hashBytes = sha.ComputeHash(data.ToArray());
-                    hashBytes.AsSpan(0, checkBuf.Length).CopyTo(checkBuf);
-                }
-#endif
                 break;
             default:
                 checkBuf.Clear(); // Unknown check — write zeros
@@ -467,15 +459,7 @@ internal static class XzBlock
                 break;
             case XzConstants.CheckSha256:
                 Span<byte> hash = stackalloc byte[32];
-#if NET5_0_OR_GREATER
                 SHA256.HashData(data, hash);
-#else
-                using (var sha = SHA256.Create())
-                {
-                    byte[] hashBytes = sha.ComputeHash(data.ToArray());
-                    hashBytes.AsSpan(0, 32).CopyTo(hash);
-                }
-#endif
                 if (!hash.SequenceEqual(expected[..32]))
                     throw new LzmaDataErrorException("XZ block SHA-256 check failed.");
                 break;

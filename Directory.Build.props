@@ -1,10 +1,23 @@
 <Project>
 
   <PropertyGroup>
-    <ClassLibTargetFrameworks>netstandard2.1;net8.0;net9.0;net10.0</ClassLibTargetFrameworks>
-    <TestTargetFrameworks Condition="'$(CI)' == 'true'">net8.0;net9.0;net10.0</TestTargetFrameworks>
-    <TestTargetFrameworks Condition="'$(CI)' != 'true'">net10.0</TestTargetFrameworks>
-    <BenchmarkTargetFramework>net10.0</BenchmarkTargetFramework>
+    <DefaultTargetFrameworks>net8.0;net9.0;net10.0</DefaultTargetFrameworks>
+    <DefaultTargetFramework>net10.0</DefaultTargetFramework>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(CI)' == 'true'">
+    <ClassLibTargetFrameworks>$(DefaultTargetFrameworks)</ClassLibTargetFrameworks>
+    <TestTargetFrameworks>$(DefaultTargetFrameworks)</TestTargetFrameworks>
+    <BenchmarkTargetFramework>$(DefaultTargetFramework)</BenchmarkTargetFramework>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(CI)' != 'true'">
+    <ClassLibTargetFrameworks>$(DefaultTargetFramework)</ClassLibTargetFrameworks>
+    <TestTargetFrameworks>$(DefaultTargetFramework)</TestTargetFrameworks>
+    <BenchmarkTargetFramework>$(DefaultTargetFramework)</BenchmarkTargetFramework>
+  </PropertyGroup>
+
+  <PropertyGroup>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
