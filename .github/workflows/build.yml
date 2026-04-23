@@ -28,7 +28,7 @@ jobs:
           - os: ubuntu-latest     # Alpine Linux x64 (musl)
             rid: linux-musl-x64
             container: alpine:latest
-          - os: ubuntu-latest     # Alpine Linux ARM64 (musl)
+          - os: ubuntu-24.04-arm  # Alpine Linux ARM64 (musl)
             rid: linux-musl-arm64
             container: alpine:latest
           
