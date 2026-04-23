@@ -417,22 +417,9 @@ internal sealed class LzmaEncoder : IDisposable
     {
         if (dist < 4) return (int)dist;
 
-#if NET5_0_OR_GREATER
         int bits = 31 - System.Numerics.BitOperations.LeadingZeroCount(dist);
-#else
-        int bits = Log2(dist);
-#endif
         return (bits << 1) + (int)((dist >> (bits - 1)) & 1);
     }
-
-#if !NET5_0_OR_GREATER
-    private static int Log2(uint value)
-    {
-        int r = 0;
-        while (value > 1) { value >>= 1; r++; }
-        return r;
-    }
-#endif
 
     public void Dispose()
     {

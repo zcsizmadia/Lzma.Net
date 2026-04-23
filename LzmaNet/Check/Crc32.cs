@@ -40,18 +40,11 @@ internal static class Crc32
     public static uint Compute(ReadOnlySpan<byte> data, uint crc = 0)
     {
         crc = ~crc;
-#if NET5_0_OR_GREATER
         ref uint tableRef = ref System.Runtime.InteropServices.MemoryMarshal.GetArrayDataReference(Table);
         for (int i = 0; i < data.Length; i++)
         {
             crc = Unsafe.Add(ref tableRef, (int)(byte)(crc ^ data[i])) ^ (crc >> 8);
         }
-#else
-        for (int i = 0; i < data.Length; i++)
-        {
-            crc = Table[(byte)(crc ^ data[i])] ^ (crc >> 8);
-        }
-#endif
         return ~crc;
     }
 

@@ -75,11 +75,7 @@ public sealed class XzDecompressStream : Stream
     /// <inheritdoc/>
     public override int Read(Span<byte> buffer)
     {
-#if NET7_0_OR_GREATER
         ObjectDisposedException.ThrowIf(_disposed, this);
-#else
-        if (_disposed) throw new ObjectDisposedException(GetType().FullName);
-#endif
 
         if (_allStreamsRead)
             return 0;

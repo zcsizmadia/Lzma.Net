@@ -2,15 +2,16 @@
 
   <PropertyGroup>
     <TargetFrameworks>$(ClassLibTargetFrameworks)</TargetFrameworks>
+    <IsPackable>true</IsPackable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
 
     <!-- Package metadata -->
-    <PackageId>LzmaNet</PackageId>
+    <PackageId>Lzma.Net</PackageId>
     <Authors>Zoltan Csizmadia</Authors>
     <Copyright>Copyright (c) Zoltan Csizmadia. All rights reserved.</Copyright>
     <Description>Pure managed C# implementation of the XZ/LZMA2/LZMA compression format. No native binaries, no P/Invoke — just 100% managed code that runs anywhere .NET runs. Based on XZ Utils 5.8.3.</Description>
-    <PackageLicenseExpression>0BSD</PackageLicenseExpression>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageTags>lzma;xz;compression;decompression;lzma2;xz-utils;managed;pure-csharp</PackageTags>
     <PackageProjectUrl>https://github.com/zcsizmadia/Lzma.Net</PackageProjectUrl>
     <RepositoryUrl>https://github.com/zcsizmadia/Lzma.Net.git</RepositoryUrl>
@@ -21,6 +22,7 @@
 
   <ItemGroup>
     <None Include="../README.md" Pack="true" PackagePath="" />
+    <None Include="../LICENSE" Pack="true" PackagePath="" />
   </ItemGroup>
 
   <ItemGroup>
