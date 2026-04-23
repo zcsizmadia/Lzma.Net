@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>$(ClassLibTargetFrameworks)</TargetFrameworks>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <!-- Package metadata -->
+    <PackageId>LzmaNet</PackageId>
+    <Authors>Zoltan Csizmadia</Authors>
+    <Copyright>Copyright (c) Zoltan Csizmadia. All rights reserved.</Copyright>
+    <Description>Pure managed C# implementation of the XZ/LZMA2/LZMA compression format. No native binaries, no P/Invoke — just 100% managed code that runs anywhere .NET runs. Based on XZ Utils 5.8.3.</Description>
+    <PackageLicenseExpression>0BSD</PackageLicenseExpression>
+    <PackageTags>lzma;xz;compression;decompression;lzma2;xz-utils;managed;pure-csharp</PackageTags>
+    <PackageProjectUrl>https://github.com/zcsizmadia/Lzma.Net</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/zcsizmadia/Lzma.Net.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>Initial release. Pure C# port of XZ Utils 5.8.3 with LZMA/LZMA2/XZ compression, BCJ/Delta filters, multi-threaded compression, and streaming APIs.</PackageReleaseNotes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../README.md" Pack="true" PackagePath="" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="LzmaNet.Tests" />
+  </ItemGroup>
+
+</Project>

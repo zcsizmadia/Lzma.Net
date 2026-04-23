@@ -1,0 +1,17 @@
+<Project>
+
+  <PropertyGroup>
+    <ClassLibTargetFrameworks>netstandard2.1;net8.0;net9.0;net10.0</ClassLibTargetFrameworks>
+    <TestTargetFrameworks>net8.0;net9.0;net10.0</TestTargetFrameworks>
+    <BenchmarkTargetFramework>net10.0</BenchmarkTargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+
+  <PropertyGroup>
+    <Version>5.8.3.1</Version>
+  </PropertyGroup>
+
+</Project>

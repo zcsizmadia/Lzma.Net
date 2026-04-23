@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>$(BenchmarkTargetFramework)</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../LzmaNet/LzmaNet.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ZCS.XZ" />
+  </ItemGroup>
+
+</Project>
