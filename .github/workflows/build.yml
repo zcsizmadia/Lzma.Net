@@ -15,23 +15,28 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest     # Linux x64
-            rid: linux-x64
-          - os: ubuntu-24.04-arm  # Linux ARM64
-            rid: linux-arm64
           - os: windows-latest    # Windows x64
             rid: win-x64
+
           - os: windows-11-arm    # Windows ARM64
             rid: win-arm64
-          - os: macos-latest      # macOS x64
-            rid: osx-x64
+
+          - os: ubuntu-latest     # Linux x64
+            rid: linux-x64
+
+          - os: ubuntu-24.04-arm  # Linux ARM64
+            rid: linux-arm64
+
           - os: ubuntu-latest     # Alpine Linux x64 (musl)
             rid: linux-musl-x64
             container: alpine:latest
+  
           - os: ubuntu-24.04-arm  # Alpine Linux ARM64 (musl)
             rid: linux-musl-arm64
             container: alpine:latest
-          
+
+          - os: macos-latest      # macOS x64
+            rid: osx-x64
 
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }} # If evaluates to 'null' for they run on the host
