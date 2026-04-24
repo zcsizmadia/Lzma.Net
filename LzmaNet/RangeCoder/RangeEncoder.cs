@@ -153,6 +153,7 @@ internal sealed class RangeEncoder
     /// Writes a single byte directly (not range-coded) to the output stream.
     /// Used for the LZMA initial zero byte.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteInitByte()
     {
         _output.WriteByte(0x00);

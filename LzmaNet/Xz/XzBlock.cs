@@ -417,6 +417,99 @@ internal static class XzBlock
         return (unpaddedSize, uncompressedData.Length);
     }
 
+    /// <summary>
+    /// Asynchronously writes a single XZ block (header + LZMA2 data + padding + check).
+    /// </summary>
+    /// <returns>Tuple of (unpadded size, uncompressed size) for the index.</returns>
+    public static async Task<(long unpaddedSize, long uncompressedSize)> WriteBlockAsync(
+        Stream output, ReadOnlyMemory<byte> uncompressedData,
+        Lzma2Encoder encoder, int checkType, CancellationToken cancellationToken = default)
+    {
+        long blockStart = output.Position;
+
+        // Encode LZMA2 data to memory (CPU-bound, stays sync)
+        using var lzma2Stream = new MemoryStream();
+        encoder.Encode(uncompressedData, lzma2Stream);
+        int compressedLength = (int)lzma2Stream.Length;
+
+        // Build block header (same as sync version)
+        using var headerStream = new MemoryStream();
+        headerStream.WriteByte(0);
+
+        byte blockFlags = 0x00;
+        blockFlags |= 0x40;
+        blockFlags |= 0x80;
+        headerStream.WriteByte(blockFlags);
+
+        WriteMultibyteInt(headerStream, (ulong)compressedLength);
+        WriteMultibyteInt(headerStream, (ulong)uncompressedData.Length);
+
+        WriteMultibyteInt(headerStream, XzConstants.FilterIdLzma2);
+        WriteMultibyteInt(headerStream, 1);
+        headerStream.WriteByte(encoder.DictionarySizeByte);
+
+        int headerContentLen = (int)headerStream.Position;
+        int totalHeaderSize = ((headerContentLen + 4 + 3) / 4) * 4;
+        int paddingNeeded = totalHeaderSize - 4 - headerContentLen;
+        for (int i = 0; i < paddingNeeded; i++)
+            headerStream.WriteByte(0);
+
+        byte[] headerBytes = headerStream.ToArray();
+        headerBytes[0] = (byte)(totalHeaderSize / 4 - 1);
+
+        byte[] crc = new byte[4];
+        Crc32.WriteLE(headerBytes.AsSpan(0, totalHeaderSize - 4), crc);
+
+        // Write header + CRC async
+        await output.WriteAsync(headerBytes, cancellationToken).ConfigureAwait(false);
+        await output.WriteAsync(crc, cancellationToken).ConfigureAwait(false);
+
+        // Write compressed data async
+        await output.WriteAsync(
+            lzma2Stream.GetBuffer().AsMemory(0, compressedLength), cancellationToken).ConfigureAwait(false);
+
+        // Padding for compressed data to 4-byte alignment
+        int dataPadding = (4 - (compressedLength % 4)) % 4;
+        if (dataPadding > 0)
+        {
+            await output.WriteAsync(new byte[dataPadding], cancellationToken).ConfigureAwait(false);
+        }
+
+        // Write check
+        int checkSize = XzConstants.GetCheckSize(checkType);
+        if (checkSize > 0)
+        {
+            byte[] checkBuf = ComputeCheck(checkType, uncompressedData.Span, checkSize);
+            await output.WriteAsync(checkBuf, cancellationToken).ConfigureAwait(false);
+        }
+
+        long unpaddedSize = totalHeaderSize + compressedLength + checkSize;
+        return (unpaddedSize, uncompressedData.Length);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static byte[] ComputeCheck(int checkType, ReadOnlySpan<byte> data, int checkSize)
+    {
+        byte[] checkBuf = new byte[checkSize];
+
+        switch (checkType)
+        {
+            case XzConstants.CheckNone:
+                break;
+            case XzConstants.CheckCrc32:
+                Crc32.WriteLE(data, checkBuf);
+                break;
+            case XzConstants.CheckCrc64:
+                Crc64.WriteLE(data, checkBuf);
+                break;
+            case XzConstants.CheckSha256:
+                System.Security.Cryptography.SHA256.HashData(data, checkBuf);
+                break;
+        }
+
+        return checkBuf;
+    }
+
     private static void WriteCheck(Stream output, int checkType, ReadOnlySpan<byte> data, int checkSize)
     {
         Span<byte> checkBuf = stackalloc byte[64];

@@ -125,6 +125,48 @@ public sealed class XzCompressStream : Stream
         _baseStream.Flush();
     }
 
+    /// <inheritdoc/>
+    public override async Task FlushAsync(CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        await _baseStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc/>
+    public override async Task WriteAsync(byte[] buffer, int offset, int count,
+        CancellationToken cancellationToken)
+    {
+        await WriteAsync(buffer.AsMemory(offset, count), cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc/>
+    public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer,
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_finished)
+            throw new InvalidOperationException("Stream has been finalized.");
+
+        await EnsureHeaderAsync(cancellationToken).ConfigureAwait(false);
+
+        _inputBuffer.Write(buffer.Span);
+
+        if (_threads == 1)
+        {
+            while (_inputBuffer.Length >= _blockSize)
+            {
+                await FlushBlockAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+        else
+        {
+            while (_inputBuffer.Length >= _blockSize * _threads)
+            {
+                await FlushBlocksParallelAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
     private void EnsureHeader()
     {
         if (!_headerWritten)
@@ -132,6 +174,17 @@ public sealed class XzCompressStream : Stream
             Span<byte> header = stackalloc byte[XzConstants.StreamHeaderSize];
             XzHeader.WriteStreamHeader(header, _checkType);
             _baseStream.Write(header);
+            _headerWritten = true;
+        }
+    }
+
+    private async Task EnsureHeaderAsync(CancellationToken cancellationToken)
+    {
+        if (!_headerWritten)
+        {
+            byte[] header = new byte[XzConstants.StreamHeaderSize];
+            XzHeader.WriteStreamHeader(header, _checkType);
+            await _baseStream.WriteAsync(header, cancellationToken).ConfigureAwait(false);
             _headerWritten = true;
         }
     }
@@ -145,6 +198,19 @@ public sealed class XzCompressStream : Stream
 
         var (unpaddedSize, uncompressedSize) = XzBlock.WriteBlock(
             _baseStream, data, _encoder, _checkType);
+
+        _indexRecords.Add((unpaddedSize, uncompressedSize));
+        _inputBuffer.SetLength(0);
+    }
+
+    private async Task FlushBlockAsync(CancellationToken cancellationToken)
+    {
+        if (_inputBuffer.Length == 0) return;
+
+        var data = _inputBuffer.GetBuffer().AsMemory(0, (int)_inputBuffer.Length);
+
+        var (unpaddedSize, uncompressedSize) = await XzBlock.WriteBlockAsync(
+            _baseStream, data, _encoder, _checkType, cancellationToken).ConfigureAwait(false);
 
         _indexRecords.Add((unpaddedSize, uncompressedSize));
         _inputBuffer.SetLength(0);
@@ -209,6 +275,64 @@ public sealed class XzCompressStream : Stream
         _inputBuffer.Position = remaining;
     }
 
+    private async Task FlushBlocksParallelAsync(CancellationToken cancellationToken)
+    {
+        if (_inputBuffer.Length == 0) return;
+
+        var buffer = _inputBuffer.GetBuffer();
+        int totalLen = (int)_inputBuffer.Length;
+
+        // Split into blocks
+        var blocks = new List<byte[]>();
+        int pos = 0;
+        while (pos < totalLen && blocks.Count < _threads)
+        {
+            int len = Math.Min(totalLen - pos, _blockSize);
+            var block = new byte[len];
+            Buffer.BlockCopy(buffer, pos, block, 0, len);
+            blocks.Add(block);
+            pos += len;
+        }
+
+        // Compress blocks in parallel (CPU-bound, stays sync)
+        var results = new (MemoryStream blockData, long unpaddedSize, long uncompressedSize)[blocks.Count];
+        Parallel.For(0, blocks.Count, new ParallelOptions { MaxDegreeOfParallelism = _threads }, i =>
+        {
+            var encoder = new Lzma2Encoder(_props);
+            try
+            {
+                var blockStream = new MemoryStream();
+                var (unpaddedSize, uncompressedSize) = XzBlock.WriteBlock(
+                    blockStream, blocks[i].AsMemory(), encoder, _checkType);
+                results[i] = (blockStream, unpaddedSize, uncompressedSize);
+            }
+            finally
+            {
+                encoder.Dispose();
+            }
+        });
+
+        // Write blocks sequentially to output async
+        foreach (var (blockData, unpaddedSize, uncompressedSize) in results)
+        {
+            using (blockData)
+            {
+                blockData.Position = 0;
+                await blockData.CopyToAsync(_baseStream, cancellationToken).ConfigureAwait(false);
+                _indexRecords.Add((unpaddedSize, uncompressedSize));
+            }
+        }
+
+        // Shift remaining data to front
+        int remaining = totalLen - pos;
+        if (remaining > 0)
+        {
+            Buffer.BlockCopy(buffer, pos, buffer, 0, remaining);
+        }
+        _inputBuffer.SetLength(remaining);
+        _inputBuffer.Position = remaining;
+    }
+
     private void Finalize_()
     {
         if (_finished) return;
@@ -234,6 +358,49 @@ public sealed class XzCompressStream : Stream
         _baseStream.Write(footer);
 
         _baseStream.Flush();
+    }
+
+    private async Task FinalizeAsync(CancellationToken cancellationToken)
+    {
+        if (_finished) return;
+        _finished = true;
+
+        await EnsureHeaderAsync(cancellationToken).ConfigureAwait(false);
+
+        // Flush remaining data
+        if (_inputBuffer.Length > 0)
+        {
+            if (_threads > 1 && _inputBuffer.Length > _blockSize)
+                await FlushBlocksParallelAsync(cancellationToken).ConfigureAwait(false);
+            while (_inputBuffer.Length > 0)
+                await FlushBlockAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        // Write index
+        long indexSize = await XzIndex.WriteIndexAsync(_baseStream, _indexRecords, cancellationToken)
+            .ConfigureAwait(false);
+
+        // Write stream footer
+        byte[] footer = new byte[XzConstants.StreamFooterSize];
+        XzHeader.WriteStreamFooter(footer, _checkType, indexSize);
+        await _baseStream.WriteAsync(footer, cancellationToken).ConfigureAwait(false);
+
+        await _baseStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc/>
+    public override async ValueTask DisposeAsync()
+    {
+        if (!_disposed)
+        {
+            await FinalizeAsync(CancellationToken.None).ConfigureAwait(false);
+            _encoder.Dispose();
+            _inputBuffer.Dispose();
+            if (!_leaveOpen)
+                await _baseStream.DisposeAsync().ConfigureAwait(false);
+            _disposed = true;
+        }
+        GC.SuppressFinalize(this);
     }
 
     /// <inheritdoc/>

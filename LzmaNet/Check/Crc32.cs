@@ -51,6 +51,7 @@ internal static class Crc32
     /// <summary>
     /// Computes CRC32 and writes it as 4 little-endian bytes.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void WriteLE(ReadOnlySpan<byte> data, Span<byte> output)
     {
         uint crc = Compute(data);
@@ -60,6 +61,7 @@ internal static class Crc32
     /// <summary>
     /// Verifies CRC32 stored as 4 little-endian bytes after the data.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool Verify(ReadOnlySpan<byte> data, ReadOnlySpan<byte> expected)
     {
         uint computed = Compute(data);
