@@ -9,10 +9,12 @@ A **native C# implementation** of the XZ/LZMA2/LZMA compression format. No nativ
 - **LZMA2 codec** — chunked LZMA compression with automatic dictionary resets
 - **Streaming API** — `XzCompressStream` and `XzDecompressStream` for processing data without loading it all into memory
 - **One-shot API** — `XzCompressor.Compress` / `Decompress` for simple byte-array operations
+- **Async API** — `CompressAsync` / `DecompressAsync` and async stream methods for non-blocking I/O
 - **Multi-threaded compression** — parallel block compression via the `Threads` option
 - **Presets 0–9** — matching `xz` CLI compression levels and dictionary sizes
 - **Extreme mode** — equivalent to `xz -e`, spends more CPU time for better compression
-- **Integrity checks** — CRC32, CRC64, or no check
+- **Integrity checks** — CRC32, CRC64, SHA-256, or no check
+- **Concatenated streams** — reads multiple XZ streams appended back-to-back
 - **Zero-copy design** — uses `Span<T>`, `ReadOnlySpan<T>`, `ArrayPool<T>`, and `stackalloc` throughout
 - **.NET 8 / 9 / 10** — multi-target support
 
@@ -75,6 +77,29 @@ using var input  = File.OpenRead("data.xz");
 using var output = File.Create("data.bin");
 using var xz = new XzDecompressStream(input);
 xz.CopyTo(output);
+```
+
+### Async — compress and decompress
+
+```csharp
+using LzmaNet;
+
+// One-shot async
+byte[] compressed = await XzCompressor.CompressAsync(data);
+byte[] restored   = await XzCompressor.DecompressAsync(compressed);
+```
+
+### Async — stream API
+
+```csharp
+using LzmaNet;
+
+using var input  = File.OpenRead("data.bin");
+using var output = File.Create("data.xz");
+await using (var xz = new XzCompressStream(output))
+{
+    await input.CopyToAsync(xz);
+}
 ```
 
 ### ASP.NET — decompress an upload on the fly

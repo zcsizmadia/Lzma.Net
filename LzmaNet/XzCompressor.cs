@@ -30,6 +30,24 @@ public static class XzCompressor
     }
 
     /// <summary>
+    /// Asynchronously compresses data into XZ format using the specified options.
+    /// </summary>
+    /// <param name="data">The uncompressed data.</param>
+    /// <param name="options">Compression options. When <c>null</c>, uses default settings (preset 6, CRC64, single-threaded).</param>
+    /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+    /// <returns>A task containing a byte array of the XZ compressed data.</returns>
+    public static async Task<byte[]> CompressAsync(ReadOnlyMemory<byte> data, XzCompressOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        var output = new MemoryStream();
+        var xz = new XzCompressStream(output, options, leaveOpen: true);
+        await using (xz.ConfigureAwait(false))
+        {
+            await xz.WriteAsync(data, cancellationToken).ConfigureAwait(false);
+        }
+        return output.ToArray();
+    }
+
+    /// <summary>
     /// Decompresses XZ formatted data and returns the uncompressed bytes.
     /// </summary>
     /// <param name="compressedData">The XZ compressed data.</param>
@@ -42,6 +60,23 @@ public static class XzCompressor
         using var xz = new XzDecompressStream(input, leaveOpen: true);
         using var output = new MemoryStream();
         xz.CopyTo(output);
+        return output.ToArray();
+    }
+
+    /// <summary>
+    /// Asynchronously decompresses XZ formatted data and returns the uncompressed bytes.
+    /// </summary>
+    /// <param name="compressedData">The XZ compressed data.</param>
+    /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+    /// <returns>A task containing a byte array of the decompressed data.</returns>
+    /// <exception cref="LzmaFormatException">The data is not in valid XZ format.</exception>
+    /// <exception cref="LzmaDataErrorException">The compressed data is corrupt.</exception>
+    public static async Task<byte[]> DecompressAsync(ReadOnlyMemory<byte> compressedData, CancellationToken cancellationToken = default)
+    {
+        var input = new MemoryStream(compressedData.ToArray());
+        await using var xz = new XzDecompressStream(input, leaveOpen: true);
+        var output = new MemoryStream();
+        await xz.CopyToAsync(output, cancellationToken).ConfigureAwait(false);
         return output.ToArray();
     }
 

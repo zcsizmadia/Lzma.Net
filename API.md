@@ -38,6 +38,34 @@ byte[] compressed = XzCompressor.Compress(data, new XzCompressOptions { Preset =
 
 ---
 
+#### CompressAsync
+
+```csharp
+public static Task<byte[]> CompressAsync(
+    ReadOnlyMemory<byte> data,
+    XzCompressOptions? options = null,
+    CancellationToken cancellationToken = default)
+```
+
+Asynchronously compresses `data` into XZ format. Uses `ReadOnlyMemory<byte>` instead of `ReadOnlySpan<byte>` since spans cannot cross `await` boundaries.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `data` | `ReadOnlyMemory<byte>` | The uncompressed data. |
+| `options` | `XzCompressOptions?` | Compression options. `null` uses defaults. |
+| `cancellationToken` | `CancellationToken` | Token to cancel the operation. |
+
+**Returns:** `Task<byte[]>` — the XZ compressed output.
+
+**Example:**
+
+```csharp
+byte[] compressed = await XzCompressor.CompressAsync(data);
+byte[] compressed = await XzCompressor.CompressAsync(data, new XzCompressOptions { Preset = 9 });
+```
+
+---
+
 #### Decompress (to byte array)
 
 ```csharp
@@ -51,6 +79,32 @@ Decompresses XZ data and returns the result as a new byte array.
 | `compressedData` | `ReadOnlySpan<byte>` | The XZ compressed data. |
 
 **Returns:** `byte[]` — the decompressed data.
+
+**Exceptions:**
+
+| Exception | Condition |
+|-----------|-----------|
+| `LzmaFormatException` | Data is not in valid XZ format. |
+| `LzmaDataErrorException` | Compressed data is corrupt or integrity check failed. |
+
+---
+
+#### DecompressAsync
+
+```csharp
+public static Task<byte[]> DecompressAsync(
+    ReadOnlyMemory<byte> compressedData,
+    CancellationToken cancellationToken = default)
+```
+
+Asynchronously decompresses XZ data and returns the result as a new byte array.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `compressedData` | `ReadOnlyMemory<byte>` | The XZ compressed data. |
+| `cancellationToken` | `CancellationToken` | Token to cancel the operation. |
+
+**Returns:** `Task<byte[]>` — the decompressed data.
 
 **Exceptions:**
 
@@ -141,6 +195,16 @@ using (var xz = new XzCompressStream(output))
 }
 ```
 
+**Async example:**
+
+```csharp
+using var output = File.Create("data.xz");
+await using (var xz = new XzCompressStream(output))
+{
+    await xz.WriteAsync(data);
+}
+```
+
 **Multi-threaded compression:**
 
 ```csharp
@@ -150,6 +214,21 @@ using (var xz = new XzCompressStream(output, opts))
 {
     input.CopyTo(xz);
 }
+```
+
+### Async Support
+
+`XzCompressStream` implements `IAsyncDisposable` and supports the following async methods:
+
+- `WriteAsync(ReadOnlyMemory<byte>, CancellationToken)` — writes and compresses data asynchronously
+- `WriteAsync(byte[], int, int, CancellationToken)` — array-based overload
+- `FlushAsync(CancellationToken)` — flushes pending blocks asynchronously
+- `DisposeAsync()` — finalizes the XZ stream and disposes resources asynchronously
+
+Use `await using` instead of `using` for async disposal:
+
+```csharp
+await using var xz = new XzCompressStream(output);
 ```
 
 ### Stream Properties
@@ -197,6 +276,26 @@ using var xz = new XzDecompressStream(input);
 using var output = File.Create("data.bin");
 xz.CopyTo(output);
 ```
+
+**Async example:**
+
+```csharp
+using var input = File.OpenRead("data.xz");
+using var xz = new XzDecompressStream(input);
+using var output = File.Create("data.bin");
+await xz.CopyToAsync(output);
+```
+
+### Async Support
+
+`XzDecompressStream` supports the following async methods:
+
+- `ReadAsync(Memory<byte>, CancellationToken)` — reads decompressed data asynchronously
+- `ReadAsync(byte[], int, int, CancellationToken)` — array-based overload
+
+### Concatenated Streams
+
+`XzDecompressStream` supports reading **concatenated XZ streams** — multiple XZ streams appended back-to-back, optionally separated by null-byte padding (multiples of 4 bytes). This is compatible with `xz --keep` and `cat file1.xz file2.xz > combined.xz`.
 
 ### Stream Properties
 
@@ -337,6 +436,7 @@ Integrity check type written into the XZ stream.
 | `None` | `0` | No integrity check. |
 | `Crc32` | `1` | CRC32 (4 bytes). Fast but less robust. |
 | `Crc64` | `4` | CRC64 (8 bytes). Good balance of speed and integrity. **Default.** |
+| `Sha256` | `10` | SHA-256 (32 bytes). Strongest integrity check. |
 
 ---
 

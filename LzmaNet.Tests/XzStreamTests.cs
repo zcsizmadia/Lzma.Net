@@ -9,219 +9,239 @@ namespace LzmaNet.Tests;
 /// </summary>
 public class XzStreamTests
 {
-    [Fact]
-    public void StreamHeader_WriteAndRead()
+    [Test]
+    public async Task StreamHeader_WriteAndRead()
     {
         Span<byte> header = stackalloc byte[12];
         XzHeader.WriteStreamHeader(header, XzConstants.CheckCrc64);
 
         int checkType = XzHeader.ReadStreamHeader(header);
-        Assert.Equal(XzConstants.CheckCrc64, checkType);
+        await Assert.That(checkType).IsEqualTo(XzConstants.CheckCrc64);
     }
 
-    [Theory]
-    [InlineData(XzConstants.CheckNone)]
-    [InlineData(XzConstants.CheckCrc32)]
-    [InlineData(XzConstants.CheckCrc64)]
-    [InlineData(XzConstants.CheckSha256)]
-    public void StreamHeader_AllCheckTypes(int checkType)
+    [Test]
+    [Arguments(XzConstants.CheckNone)]
+    [Arguments(XzConstants.CheckCrc32)]
+    [Arguments(XzConstants.CheckCrc64)]
+    [Arguments(XzConstants.CheckSha256)]
+    public async Task StreamHeader_AllCheckTypes(int checkType)
     {
         Span<byte> header = stackalloc byte[12];
         XzHeader.WriteStreamHeader(header, checkType);
 
         int read = XzHeader.ReadStreamHeader(header);
-        Assert.Equal(checkType, read);
+        await Assert.That(read).IsEqualTo(checkType);
     }
 
-    [Fact]
-    public void StreamHeader_InvalidMagic_Throws()
+    [Test]
+    public async Task StreamHeader_InvalidMagic_Throws()
     {
         byte[] header = new byte[12];
-        header[0] = 0xFF; // Wrong magic
+        header[0] = 0xFF;
 
-        Assert.Throws<LzmaFormatException>(() => XzHeader.ReadStreamHeader(header));
+        await Assert.That(() =>
+        {
+            XzHeader.ReadStreamHeader(header);
+        }).ThrowsExactly<LzmaFormatException>();
     }
 
-    [Fact]
-    public void StreamHeader_CorruptCrc_Throws()
+    [Test]
+    public async Task StreamHeader_CorruptCrc_Throws()
     {
         byte[] header = new byte[12];
         XzHeader.WriteStreamHeader(header, XzConstants.CheckCrc64);
-        header[8] ^= 0xFF; // Corrupt CRC
+        header[8] ^= 0xFF;
 
-        Assert.Throws<LzmaDataErrorException>(() => XzHeader.ReadStreamHeader(header));
+        await Assert.That(() =>
+        {
+            XzHeader.ReadStreamHeader(header);
+        }).ThrowsExactly<LzmaDataErrorException>();
     }
 
-    [Fact]
-    public void StreamHeader_TooShort_Throws()
+    [Test]
+    public async Task StreamHeader_TooShort_Throws()
     {
         byte[] header = new byte[6];
-        Assert.Throws<LzmaFormatException>(() => XzHeader.ReadStreamHeader(header));
+        await Assert.That(() =>
+        {
+            XzHeader.ReadStreamHeader(header);
+        }).ThrowsExactly<LzmaFormatException>();
     }
 
-    [Fact]
-    public void StreamFooter_WriteAndRead()
+    [Test]
+    public async Task StreamFooter_WriteAndRead()
     {
         Span<byte> footer = stackalloc byte[12];
-        long indexSize = 16; // Must be multiple of 4
+        long indexSize = 16;
         XzHeader.WriteStreamFooter(footer, XzConstants.CheckCrc64, indexSize);
 
         long readIndexSize = XzHeader.ReadStreamFooter(footer, XzConstants.CheckCrc64);
-        Assert.Equal(indexSize, readIndexSize);
+        await Assert.That(readIndexSize).IsEqualTo(indexSize);
     }
 
-    [Fact]
-    public void StreamFooter_CheckTypeMismatch_Throws()
+    [Test]
+    public async Task StreamFooter_CheckTypeMismatch_Throws()
     {
         byte[] footer = new byte[12];
         XzHeader.WriteStreamFooter(footer, XzConstants.CheckCrc64, 16);
 
-        Assert.Throws<LzmaDataErrorException>(() =>
-            XzHeader.ReadStreamFooter(footer, XzConstants.CheckCrc32));
+        await Assert.That(() =>
+        {
+            XzHeader.ReadStreamFooter(footer, XzConstants.CheckCrc32);
+        }).ThrowsExactly<LzmaDataErrorException>();
     }
 
-    [Fact]
-    public void StreamFooter_InvalidMagic_Throws()
+    [Test]
+    public async Task StreamFooter_InvalidMagic_Throws()
     {
         byte[] footer = new byte[12];
-        footer[10] = 0x00; // Wrong magic
+        footer[10] = 0x00;
 
-        Assert.Throws<LzmaFormatException>(() =>
-            XzHeader.ReadStreamFooter(footer, XzConstants.CheckNone));
+        await Assert.That(() =>
+        {
+            XzHeader.ReadStreamFooter(footer, XzConstants.CheckNone);
+        }).ThrowsExactly<LzmaFormatException>();
     }
 
-    [Theory]
-    [InlineData(0, 0)]
-    [InlineData(1, 4)]
-    [InlineData(4, 8)]
-    [InlineData(10, 32)]
-    public void CheckSize_KnownValues(int checkType, int expectedSize)
+    [Test]
+    [Arguments(0, 0)]
+    [Arguments(1, 4)]
+    [Arguments(4, 8)]
+    [Arguments(10, 32)]
+    public async Task CheckSize_KnownValues(int checkType, int expectedSize)
     {
-        Assert.Equal(expectedSize, XzConstants.GetCheckSize(checkType));
+        await Assert.That(XzConstants.GetCheckSize(checkType)).IsEqualTo(expectedSize);
     }
 
-    [Fact]
-    public void CompressedData_StartsWithXzMagic()
-    {
-        byte[] data = "test"u8.ToArray();
-        byte[] compressed = XzCompressor.Compress(data);
-
-        Assert.True(compressed.Length >= 6);
-        Assert.Equal(0xFD, compressed[0]);
-        Assert.Equal(0x37, compressed[1]);
-        Assert.Equal(0x7A, compressed[2]);
-        Assert.Equal(0x58, compressed[3]);
-        Assert.Equal(0x5A, compressed[4]);
-        Assert.Equal(0x00, compressed[5]);
-    }
-
-    [Fact]
-    public void CompressedData_EndsWithXzFooterMagic()
+    [Test]
+    public async Task CompressedData_StartsWithXzMagic()
     {
         byte[] data = "test"u8.ToArray();
         byte[] compressed = XzCompressor.Compress(data);
 
-        Assert.True(compressed.Length >= 2);
-        Assert.Equal(0x59, compressed[^2]); // 'Y'
-        Assert.Equal(0x5A, compressed[^1]); // 'Z'
+        await Assert.That(compressed.Length >= 6).IsTrue();
+        await Assert.That(compressed[0]).IsEqualTo((byte)0xFD);
+        await Assert.That(compressed[1]).IsEqualTo((byte)0x37);
+        await Assert.That(compressed[2]).IsEqualTo((byte)0x7A);
+        await Assert.That(compressed[3]).IsEqualTo((byte)0x58);
+        await Assert.That(compressed[4]).IsEqualTo((byte)0x5A);
+        await Assert.That(compressed[5]).IsEqualTo((byte)0x00);
     }
 
-    [Fact]
-    public void Decompress_InvalidFormat_Throws()
+    [Test]
+    public async Task CompressedData_EndsWithXzFooterMagic()
+    {
+        byte[] data = "test"u8.ToArray();
+        byte[] compressed = XzCompressor.Compress(data);
+
+        await Assert.That(compressed.Length >= 2).IsTrue();
+        await Assert.That(compressed[^2]).IsEqualTo((byte)0x59);
+        await Assert.That(compressed[^1]).IsEqualTo((byte)0x5A);
+    }
+
+    [Test]
+    public async Task Decompress_InvalidFormat_Throws()
     {
         byte[] garbage = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B];
-        Assert.Throws<LzmaFormatException>(() => XzCompressor.Decompress(garbage));
+        await Assert.That(() =>
+        {
+            XzCompressor.Decompress(garbage);
+        }).ThrowsExactly<LzmaFormatException>();
     }
 
-    [Fact]
-    public void Decompress_TruncatedData_Throws()
+    [Test]
+    public async Task Decompress_TruncatedData_Throws()
     {
         byte[] data = "test"u8.ToArray();
         byte[] compressed = XzCompressor.Compress(data);
 
-        // Truncate
         byte[] truncated = compressed[..(compressed.Length / 2)];
-        Assert.ThrowsAny<LzmaException>(() => XzCompressor.Decompress(truncated));
+        await Assert.That(() =>
+        {
+            XzCompressor.Decompress(truncated);
+        }).Throws<LzmaException>();
     }
 
-    [Fact]
-    public void Decompress_CorruptedData_Throws()
+    [Test]
+    public async Task Decompress_CorruptedData_Throws()
     {
         byte[] data = "test data for corruption check"u8.ToArray();
         byte[] compressed = XzCompressor.Compress(data);
 
-        // Corrupt a byte in the middle (compressed data area)
         if (compressed.Length > 20)
         {
             compressed[15] ^= 0xFF;
-            Assert.ThrowsAny<LzmaException>(() => XzCompressor.Decompress(compressed));
+            await Assert.That(() =>
+            {
+                XzCompressor.Decompress(compressed);
+            }).Throws<LzmaException>();
         }
     }
 
-    [Fact]
-    public void XzDecompressStream_Properties()
+    [Test]
+    public async Task XzDecompressStream_Properties()
     {
         using var ms = new MemoryStream(XzCompressor.Compress("x"u8.ToArray()));
         using var xz = new XzDecompressStream(ms);
 
-        Assert.True(xz.CanRead);
-        Assert.False(xz.CanWrite);
-        Assert.False(xz.CanSeek);
-        Assert.Throws<NotSupportedException>(() => xz.Length);
-        Assert.Throws<NotSupportedException>(() => xz.Position);
-        Assert.Throws<NotSupportedException>(() => xz.Position = 0);
-        Assert.Throws<NotSupportedException>(() => xz.Seek(0, SeekOrigin.Begin));
-        Assert.Throws<NotSupportedException>(() => xz.SetLength(0));
-        Assert.Throws<NotSupportedException>(() => xz.Write(new byte[1], 0, 1));
+        await Assert.That(xz.CanRead).IsTrue();
+        await Assert.That(xz.CanWrite).IsFalse();
+        await Assert.That(xz.CanSeek).IsFalse();
+        await Assert.That(() => xz.Length).ThrowsExactly<NotSupportedException>();
+        await Assert.That(() => xz.Position).ThrowsExactly<NotSupportedException>();
+        await Assert.That(() => xz.Position = 0).ThrowsExactly<NotSupportedException>();
+        await Assert.That(() => xz.Seek(0, SeekOrigin.Begin)).ThrowsExactly<NotSupportedException>();
+        await Assert.That(() => xz.SetLength(0)).ThrowsExactly<NotSupportedException>();
+        await Assert.That(() => xz.Write(new byte[1], 0, 1)).ThrowsExactly<NotSupportedException>();
     }
 
-    [Fact]
-    public void XzCompressStream_Properties()
+    [Test]
+    public async Task XzCompressStream_Properties()
     {
         using var ms = new MemoryStream();
         using var xz = new XzCompressStream(ms, leaveOpen: true);
 
-        Assert.False(xz.CanRead);
-        Assert.True(xz.CanWrite);
-        Assert.False(xz.CanSeek);
-        Assert.Throws<NotSupportedException>(() => xz.Length);
-        Assert.Throws<NotSupportedException>(() => xz.Position);
-        Assert.Throws<NotSupportedException>(() => xz.Position = 0);
-        Assert.Throws<NotSupportedException>(() => xz.Read(new byte[1], 0, 1));
-        Assert.Throws<NotSupportedException>(() => xz.Seek(0, SeekOrigin.Begin));
-        Assert.Throws<NotSupportedException>(() => xz.SetLength(0));
+        await Assert.That(xz.CanRead).IsFalse();
+        await Assert.That(xz.CanWrite).IsTrue();
+        await Assert.That(xz.CanSeek).IsFalse();
+        await Assert.That(() => xz.Length).ThrowsExactly<NotSupportedException>();
+        await Assert.That(() => xz.Position).ThrowsExactly<NotSupportedException>();
+        await Assert.That(() => xz.Position = 0).ThrowsExactly<NotSupportedException>();
+        await Assert.That(() => xz.Read(new byte[1], 0, 1)).ThrowsExactly<NotSupportedException>();
+        await Assert.That(() => xz.Seek(0, SeekOrigin.Begin)).ThrowsExactly<NotSupportedException>();
+        await Assert.That(() => xz.SetLength(0)).ThrowsExactly<NotSupportedException>();
     }
 
-    [Fact]
-    public void XzCompressStream_InvalidPreset_Throws()
+    [Test]
+    public async Task XzCompressStream_InvalidPreset_Throws()
     {
         using var ms = new MemoryStream();
-        Assert.Throws<ArgumentOutOfRangeException>(() => new XzCompressStream(ms, new XzCompressOptions { Preset = 10 }));
-        Assert.Throws<ArgumentOutOfRangeException>(() => new XzCompressStream(ms, new XzCompressOptions { Preset = -1 }));
+        await Assert.That(() => new XzCompressStream(ms, new XzCompressOptions { Preset = 10 })).ThrowsExactly<ArgumentOutOfRangeException>();
+        await Assert.That(() => new XzCompressStream(ms, new XzCompressOptions { Preset = -1 })).ThrowsExactly<ArgumentOutOfRangeException>();
     }
 
-    [Fact]
-    public void XzCompressStream_NullStream_Throws()
+    [Test]
+    public async Task XzCompressStream_NullStream_Throws()
     {
-        Assert.Throws<ArgumentNullException>(() => new XzCompressStream(null!));
+        await Assert.That(() => new XzCompressStream(null!)).ThrowsExactly<ArgumentNullException>();
     }
 
-    [Fact]
-    public void XzDecompressStream_NullStream_Throws()
+    [Test]
+    public async Task XzDecompressStream_NullStream_Throws()
     {
-        Assert.Throws<ArgumentNullException>(() => new XzDecompressStream(null!));
+        await Assert.That(() => new XzDecompressStream(null!)).ThrowsExactly<ArgumentNullException>();
     }
 
-    [Fact]
-    public void MaxCompressedSize_ReturnsReasonableValue()
+    [Test]
+    public async Task MaxCompressedSize_ReturnsReasonableValue()
     {
         long maxSize = XzCompressor.MaxCompressedSize(1000);
-        Assert.True(maxSize > 1000);
-        Assert.True(maxSize < 2000);
+        await Assert.That(maxSize).IsGreaterThan(1000L);
+        await Assert.That(maxSize).IsLessThan(2000L);
     }
 
-    [Fact]
-    public void XzDecompressStream_LeaveOpen_True()
+    [Test]
+    public async Task XzDecompressStream_LeaveOpen_True()
     {
         using var ms = new MemoryStream(XzCompressor.Compress("test"u8.ToArray()));
         using (var xz = new XzDecompressStream(ms, leaveOpen: true))
@@ -229,7 +249,6 @@ public class XzStreamTests
             using var result = new MemoryStream();
             xz.CopyTo(result);
         }
-        // Stream should still be usable
-        Assert.True(ms.CanRead);
+        await Assert.That(ms.CanRead).IsTrue();
     }
 }

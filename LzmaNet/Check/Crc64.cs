@@ -74,6 +74,7 @@ internal static class Crc64
     /// <summary>
     /// Computes CRC64 and writes it as 8 little-endian bytes.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void WriteLE(ReadOnlySpan<byte> data, Span<byte> output)
     {
         ulong crc = Compute(data);
@@ -83,6 +84,7 @@ internal static class Crc64
     /// <summary>
     /// Verifies CRC64 stored as 8 little-endian bytes.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool Verify(ReadOnlySpan<byte> data, ReadOnlySpan<byte> expected)
     {
         ulong computed = Compute(data);
