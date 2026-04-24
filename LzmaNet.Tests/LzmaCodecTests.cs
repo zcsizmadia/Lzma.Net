@@ -10,155 +10,154 @@ namespace LzmaNet.Tests;
 /// </summary>
 public class LzmaCodecTests
 {
-    [Theory]
-    [InlineData(0x5D, 3, 0, 2)]  // 0x5D = 3 + 9*(0 + 5*2) = 93
-    [InlineData(0, 0, 0, 0)]  // lc=0, lp=0, pb=0 → 0
-    public void Properties_EncodeDecodeRoundTrip(byte expected, int lc, int lp, int pb)
+    [Test]
+    [Arguments((byte)0x5D, 3, 0, 2)]
+    [Arguments((byte)0, 0, 0, 0)]
+    public async Task Properties_EncodeDecodeRoundTrip(byte expected, int lc, int lp, int pb)
     {
         byte encoded = LzmaConstants.EncodeProperties(lc, lp, pb);
-        Assert.Equal(expected, encoded);
+        await Assert.That(encoded).IsEqualTo(expected);
 
-        Assert.True(LzmaConstants.DecodeProperties(encoded, out int dlc, out int dlp, out int dpb));
-        Assert.Equal(lc, dlc);
-        Assert.Equal(lp, dlp);
-        Assert.Equal(pb, dpb);
+        await Assert.That(LzmaConstants.DecodeProperties(encoded, out int dlc, out int dlp, out int dpb)).IsTrue();
+        await Assert.That(dlc).IsEqualTo(lc);
+        await Assert.That(dlp).IsEqualTo(lp);
+        await Assert.That(dpb).IsEqualTo(pb);
     }
 
-    [Theory]
-    [InlineData(0, 0, 0)]
-    [InlineData(8, 4, 4)]
-    [InlineData(3, 0, 2)]
-    public void Properties_AllCombinations(int lc, int lp, int pb)
+    [Test]
+    [Arguments(0, 0, 0)]
+    [Arguments(8, 4, 4)]
+    [Arguments(3, 0, 2)]
+    public async Task Properties_AllCombinations(int lc, int lp, int pb)
     {
         byte encoded = LzmaConstants.EncodeProperties(lc, lp, pb);
-        Assert.True(LzmaConstants.DecodeProperties(encoded, out int dlc, out int dlp, out int dpb));
-        Assert.Equal(lc, dlc);
-        Assert.Equal(lp, dlp);
-        Assert.Equal(pb, dpb);
+        await Assert.That(LzmaConstants.DecodeProperties(encoded, out int dlc, out int dlp, out int dpb)).IsTrue();
+        await Assert.That(dlc).IsEqualTo(lc);
+        await Assert.That(dlp).IsEqualTo(lp);
+        await Assert.That(dpb).IsEqualTo(pb);
     }
 
-    [Fact]
-    public void Properties_InvalidByte_ReturnsFalse()
+    [Test]
+    public async Task Properties_InvalidByte_ReturnsFalse()
     {
-        Assert.False(LzmaConstants.DecodeProperties(225, out _, out _, out _));
+        await Assert.That(LzmaConstants.DecodeProperties(225, out _, out _, out _)).IsFalse();
     }
 
-    [Theory]
-    [InlineData(0)]
-    [InlineData(1)]
-    [InlineData(6)]
-    [InlineData(9)]
-    public void EncoderProperties_FromPreset_ValidSettings(int preset)
+    [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(6)]
+    [Arguments(9)]
+    public async Task EncoderProperties_FromPreset_ValidSettings(int preset)
     {
         var props = LzmaEncoderProperties.FromPreset(preset);
-        props.Validate(); // Should not throw
+        props.Validate();
 
-        Assert.True(props.DictionarySize > 0);
-        Assert.InRange(props.Lc, 0, 8);
-        Assert.InRange(props.Lp, 0, 4);
-        Assert.InRange(props.Pb, 0, 4);
-        Assert.True(props.MatchMaxLen >= 2);
-        Assert.True(props.CutValue > 0);
+        await Assert.That(props.DictionarySize).IsGreaterThan(0);
+        await Assert.That(props.Lc).IsGreaterThanOrEqualTo(0);
+        await Assert.That(props.Lc).IsLessThanOrEqualTo(8);
+        await Assert.That(props.Lp).IsGreaterThanOrEqualTo(0);
+        await Assert.That(props.Lp).IsLessThanOrEqualTo(4);
+        await Assert.That(props.Pb).IsGreaterThanOrEqualTo(0);
+        await Assert.That(props.Pb).IsLessThanOrEqualTo(4);
+        await Assert.That(props.MatchMaxLen).IsGreaterThanOrEqualTo(2);
+        await Assert.That(props.CutValue).IsGreaterThan(0);
     }
 
-    [Fact]
-    public void EncoderProperties_InvalidPreset_Throws()
+    [Test]
+    public async Task EncoderProperties_InvalidPreset_Throws()
     {
-        Assert.Throws<ArgumentOutOfRangeException>(() => LzmaEncoderProperties.FromPreset(10));
-        Assert.Throws<ArgumentOutOfRangeException>(() => LzmaEncoderProperties.FromPreset(-1));
+        await Assert.That(() => LzmaEncoderProperties.FromPreset(10)).ThrowsExactly<ArgumentOutOfRangeException>();
+        await Assert.That(() => LzmaEncoderProperties.FromPreset(-1)).ThrowsExactly<ArgumentOutOfRangeException>();
     }
 
-    [Fact]
-    public void StateTransitions_Literal()
+    [Test]
+    public async Task StateTransitions_Literal()
     {
-        // States 0-3 stay at 0 after literal
         for (int s = 0; s < 4; s++)
-            Assert.Equal(0, LzmaConstants.StateUpdateLiteral(s));
+            await Assert.That(LzmaConstants.StateUpdateLiteral(s)).IsEqualTo(0);
 
-        // States 4-6 -> s-3
-        Assert.Equal(1, LzmaConstants.StateUpdateLiteral(4));
-        Assert.Equal(2, LzmaConstants.StateUpdateLiteral(5));
-        Assert.Equal(3, LzmaConstants.StateUpdateLiteral(6));
+        await Assert.That(LzmaConstants.StateUpdateLiteral(4)).IsEqualTo(1);
+        await Assert.That(LzmaConstants.StateUpdateLiteral(5)).IsEqualTo(2);
+        await Assert.That(LzmaConstants.StateUpdateLiteral(6)).IsEqualTo(3);
 
-        // States 7-9 -> s-3
-        Assert.Equal(4, LzmaConstants.StateUpdateLiteral(7));
-        Assert.Equal(5, LzmaConstants.StateUpdateLiteral(8));
-        Assert.Equal(6, LzmaConstants.StateUpdateLiteral(9));
+        await Assert.That(LzmaConstants.StateUpdateLiteral(7)).IsEqualTo(4);
+        await Assert.That(LzmaConstants.StateUpdateLiteral(8)).IsEqualTo(5);
+        await Assert.That(LzmaConstants.StateUpdateLiteral(9)).IsEqualTo(6);
 
-        // States 10-11 -> s-6
-        Assert.Equal(4, LzmaConstants.StateUpdateLiteral(10));
-        Assert.Equal(5, LzmaConstants.StateUpdateLiteral(11));
+        await Assert.That(LzmaConstants.StateUpdateLiteral(10)).IsEqualTo(4);
+        await Assert.That(LzmaConstants.StateUpdateLiteral(11)).IsEqualTo(5);
     }
 
-    [Fact]
-    public void StateTransitions_Match()
+    [Test]
+    public async Task StateTransitions_Match()
     {
         for (int s = 0; s < 7; s++)
-            Assert.Equal(7, LzmaConstants.StateUpdateMatch(s));
+            await Assert.That(LzmaConstants.StateUpdateMatch(s)).IsEqualTo(7);
         for (int s = 7; s < 12; s++)
-            Assert.Equal(10, LzmaConstants.StateUpdateMatch(s));
+            await Assert.That(LzmaConstants.StateUpdateMatch(s)).IsEqualTo(10);
     }
 
-    [Fact]
-    public void StateTransitions_LongRep()
+    [Test]
+    public async Task StateTransitions_LongRep()
     {
         for (int s = 0; s < 7; s++)
-            Assert.Equal(8, LzmaConstants.StateUpdateLongRep(s));
+            await Assert.That(LzmaConstants.StateUpdateLongRep(s)).IsEqualTo(8);
         for (int s = 7; s < 12; s++)
-            Assert.Equal(11, LzmaConstants.StateUpdateLongRep(s));
+            await Assert.That(LzmaConstants.StateUpdateLongRep(s)).IsEqualTo(11);
     }
 
-    [Fact]
-    public void StateTransitions_ShortRep()
+    [Test]
+    public async Task StateTransitions_ShortRep()
     {
         for (int s = 0; s < 7; s++)
-            Assert.Equal(9, LzmaConstants.StateUpdateShortRep(s));
+            await Assert.That(LzmaConstants.StateUpdateShortRep(s)).IsEqualTo(9);
         for (int s = 7; s < 12; s++)
-            Assert.Equal(11, LzmaConstants.StateUpdateShortRep(s));
+            await Assert.That(LzmaConstants.StateUpdateShortRep(s)).IsEqualTo(11);
     }
 
-    [Fact]
-    public void StateIsLiteral()
+    [Test]
+    public async Task StateIsLiteral()
     {
         for (int s = 0; s < 7; s++)
-            Assert.True(LzmaConstants.StateIsLiteral(s));
+            await Assert.That(LzmaConstants.StateIsLiteral(s)).IsTrue();
         for (int s = 7; s < 12; s++)
-            Assert.False(LzmaConstants.StateIsLiteral(s));
+            await Assert.That(LzmaConstants.StateIsLiteral(s)).IsFalse();
     }
 
-    [Theory]
-    [InlineData(2, 0)]
-    [InlineData(3, 1)]
-    [InlineData(4, 2)]
-    [InlineData(5, 3)]
-    [InlineData(100, 3)]
-    [InlineData(273, 3)]
-    public void GetLenToPosState_CorrectValues(int len, int expected)
+    [Test]
+    [Arguments(2, 0)]
+    [Arguments(3, 1)]
+    [Arguments(4, 2)]
+    [Arguments(5, 3)]
+    [Arguments(100, 3)]
+    [Arguments(273, 3)]
+    public async Task GetLenToPosState_CorrectValues(int len, int expected)
     {
-        Assert.Equal(expected, LzmaConstants.GetLenToPosState(len));
+        await Assert.That(LzmaConstants.GetLenToPosState(len)).IsEqualTo(expected);
     }
 
-    [Fact]
-    public void Lzma2_DictSizeEncoding_RoundTrip()
+    [Test]
+    public async Task Lzma2_DictSizeEncoding_RoundTrip()
     {
         int[] sizes = [4096, 8192, 65536, 1 << 20, 1 << 23, 1 << 25];
         foreach (int size in sizes)
         {
             byte encoded = Lzma2Encoder.EncodeDictSize(size);
             int decoded = Lzma2Encoder.DecodeDictSize(encoded);
-            Assert.True(decoded >= size, $"DictSize {size}: encoded={encoded}, decoded={decoded}");
+            await Assert.That(decoded >= size).IsTrue();
         }
     }
 
-    [Fact]
-    public void Lzma2_DictSize_ZeroEncoding()
+    [Test]
+    public async Task Lzma2_DictSize_ZeroEncoding()
     {
-        Assert.Equal(4096, Lzma2Encoder.DecodeDictSize(0));
+        await Assert.That(Lzma2Encoder.DecodeDictSize(0)).IsEqualTo(4096);
     }
 
-    [Fact]
-    public void Lzma2_DictSize_InvalidByte_Throws()
+    [Test]
+    public async Task Lzma2_DictSize_InvalidByte_Throws()
     {
-        Assert.Throws<LzmaDataErrorException>(() => Lzma2Encoder.DecodeDictSize(41));
+        await Assert.That(() => Lzma2Encoder.DecodeDictSize(41)).ThrowsExactly<LzmaDataErrorException>();
     }
 }

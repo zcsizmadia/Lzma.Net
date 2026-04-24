@@ -8,47 +8,46 @@ namespace LzmaNet.Tests;
 /// </summary>
 public class RoundTripTests
 {
-    [Fact]
-    public void RoundTrip_EmptyData()
+    [Test]
+    public async Task RoundTrip_EmptyData()
     {
         byte[] original = [];
         byte[] compressed = XzCompressor.Compress(original);
         byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
     }
 
-    [Fact]
-    public void RoundTrip_SingleByte()
+    [Test]
+    public async Task RoundTrip_SingleByte()
     {
         byte[] original = [42];
         byte[] compressed = XzCompressor.Compress(original);
         byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
     }
 
-    [Fact]
-    public void RoundTrip_SmallData()
+    [Test]
+    public async Task RoundTrip_SmallData()
     {
         byte[] original = "Hello, World!"u8.ToArray();
         byte[] compressed = XzCompressor.Compress(original);
         byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
     }
 
-    [Fact]
-    public void RoundTrip_AllZeros()
+    [Test]
+    public async Task RoundTrip_AllZeros()
     {
         byte[] original = new byte[4096];
         byte[] compressed = XzCompressor.Compress(original);
         byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
 
-        // Highly compressible data should compress well
-        Assert.True(compressed.Length < original.Length);
+        await Assert.That(compressed.Length < original.Length).IsTrue();
     }
 
-    [Fact]
-    public void RoundTrip_RepeatingPattern()
+    [Test]
+    public async Task RoundTrip_RepeatingPattern()
     {
         byte[] original = new byte[10000];
         for (int i = 0; i < original.Length; i++)
@@ -56,38 +55,38 @@ public class RoundTripTests
 
         byte[] compressed = XzCompressor.Compress(original);
         byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
     }
 
-    [Fact]
-    public void RoundTrip_RandomData_1KB()
+    [Test]
+    public async Task RoundTrip_RandomData_1KB()
     {
         byte[] original = new byte[1024];
         new Random(12345).NextBytes(original);
 
         byte[] compressed = XzCompressor.Compress(original);
         byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
     }
 
-    [Fact]
-    public void RoundTrip_RandomData_64KB()
+    [Test]
+    public async Task RoundTrip_RandomData_64KB()
     {
         byte[] original = new byte[65536];
         new Random(54321).NextBytes(original);
 
         byte[] compressed = XzCompressor.Compress(original);
         byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
     }
 
-    [Theory]
-    [InlineData(0)]
-    [InlineData(1)]
-    [InlineData(3)]
-    [InlineData(6)]
-    [InlineData(9)]
-    public void RoundTrip_AllPresetLevels(int preset)
+    [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(3)]
+    [Arguments(6)]
+    [Arguments(9)]
+    public async Task RoundTrip_AllPresetLevels(int preset)
     {
         byte[] original = new byte[2048];
         for (int i = 0; i < original.Length; i++)
@@ -95,24 +94,24 @@ public class RoundTripTests
 
         byte[] compressed = XzCompressor.Compress(original, new XzCompressOptions { Preset = preset });
         byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
     }
 
-    [Theory]
-    [InlineData(XzCheckType.None)]
-    [InlineData(XzCheckType.Crc32)]
-    [InlineData(XzCheckType.Crc64)]
-    public void RoundTrip_CheckTypes(XzCheckType checkType)
+    [Test]
+    [Arguments(XzCheckType.None)]
+    [Arguments(XzCheckType.Crc32)]
+    [Arguments(XzCheckType.Crc64)]
+    public async Task RoundTrip_CheckTypes(XzCheckType checkType)
     {
         byte[] original = "Test data with different check types"u8.ToArray();
 
         byte[] compressed = XzCompressor.Compress(original, new XzCompressOptions { CheckType = checkType });
         byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
     }
 
-    [Fact]
-    public void RoundTrip_TextData()
+    [Test]
+    public async Task RoundTrip_TextData()
     {
         string text = string.Join("\n", Enumerable.Range(0, 100)
             .Select(i => $"Line {i}: The quick brown fox jumps over the lazy dog."));
@@ -120,16 +119,14 @@ public class RoundTripTests
 
         byte[] compressed = XzCompressor.Compress(original);
         byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
 
-        // Text should compress well
-        Assert.True(compressed.Length < original.Length / 2);
+        await Assert.That(compressed.Length < original.Length / 2).IsTrue();
     }
 
-    [Fact]
-    public void RoundTrip_LargeCompressibleData()
+    [Test]
+    public async Task RoundTrip_LargeCompressibleData()
     {
-        // Create data with lots of repeated patterns
         byte[] pattern = "ABCDEFGHIJKLMNOP"u8.ToArray();
         byte[] original = new byte[100_000];
         for (int i = 0; i < original.Length; i++)
@@ -137,11 +134,11 @@ public class RoundTripTests
 
         byte[] compressed = XzCompressor.Compress(original, new XzCompressOptions { Preset = 1 });
         byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
     }
 
-    [Fact]
-    public void RoundTrip_DecompressIntoSpan()
+    [Test]
+    public async Task RoundTrip_DecompressIntoSpan()
     {
         byte[] original = "Span-based decompression test"u8.ToArray();
         byte[] compressed = XzCompressor.Compress(original);
@@ -149,12 +146,12 @@ public class RoundTripTests
         byte[] buffer = new byte[1024];
         int written = XzCompressor.Decompress(compressed, buffer.AsSpan());
 
-        Assert.Equal(original.Length, written);
-        Assert.Equal(original, buffer[..written]);
+        await Assert.That(written).IsEqualTo(original.Length);
+        await Assert.That(buffer[..written].SequenceEqual(original)).IsTrue();
     }
 
-    [Fact]
-    public void RoundTrip_ViaStreams()
+    [Test]
+    public async Task RoundTrip_ViaStreams()
     {
         byte[] original = new byte[5000];
         new Random(99).NextBytes(original);
@@ -170,11 +167,11 @@ public class RoundTripTests
         using var resultStream = new MemoryStream();
         xzIn.CopyTo(resultStream);
 
-        Assert.Equal(original, resultStream.ToArray());
+        await Assert.That(resultStream.ToArray().SequenceEqual(original)).IsTrue();
     }
 
-    [Fact]
-    public void RoundTrip_StreamWriteInChunks()
+    [Test]
+    public async Task RoundTrip_StreamWriteInChunks()
     {
         byte[] original = new byte[10000];
         new Random(777).NextBytes(original);
@@ -182,9 +179,8 @@ public class RoundTripTests
         using var compressedStream = new MemoryStream();
         using (var xzOut = new XzCompressStream(compressedStream, leaveOpen: true))
         {
-            // Write in small chunks
             int pos = 0;
-            int chunkSize = 137; // Odd size to test buffer handling
+            int chunkSize = 137;
             while (pos < original.Length)
             {
                 int len = Math.Min(chunkSize, original.Length - pos);
@@ -195,11 +191,11 @@ public class RoundTripTests
 
         compressedStream.Position = 0;
         byte[] decompressed = XzCompressor.Decompress(compressedStream.ToArray());
-        Assert.Equal(original, decompressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
     }
 
-    [Fact]
-    public void RoundTrip_StreamReadInChunks()
+    [Test]
+    public async Task RoundTrip_StreamReadInChunks()
     {
         byte[] original = "Read this data in small chunks for testing"u8.ToArray();
         byte[] compressed = XzCompressor.Compress(original);
@@ -217,39 +213,36 @@ public class RoundTripTests
             totalRead += read;
         }
 
-        Assert.Equal(original.Length, totalRead);
-        Assert.Equal(original, result[..totalRead]);
+        await Assert.That(totalRead).IsEqualTo(original.Length);
+        await Assert.That(result[..totalRead].SequenceEqual(original)).IsTrue();
     }
 
-    [Theory]
-    [InlineData(2)]
-    [InlineData(4)]
-    public void RoundTrip_MultiThreaded_LargeData(int threads)
+    [Test]
+    [Arguments(2)]
+    [Arguments(4)]
+    public async Task RoundTrip_MultiThreaded_LargeData(int threads)
     {
-        // Data must be large enough to span multiple blocks at preset 0 (block size ~1MB)
         byte[] original = new byte[4 * 1024 * 1024];
         var rng = new Random(99887);
-        // Mix compressible and random sections
         for (int i = 0; i < original.Length; i++)
             original[i] = (byte)(i % 256 < 200 ? i % 37 : rng.Next(256));
 
         byte[] compressed = XzCompressor.Compress(original, new XzCompressOptions { Preset = 0, Threads = threads });
         byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
     }
 
-    [Fact]
-    public void RoundTrip_MultiThreaded_SmallData()
+    [Test]
+    public async Task RoundTrip_MultiThreaded_SmallData()
     {
-        // Small data that fits in a single block — should still work with threads > 1
         byte[] original = "Multithreaded small data test"u8.ToArray();
         byte[] compressed = XzCompressor.Compress(original, new XzCompressOptions { Threads = 2 });
         byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
     }
 
-    [Fact]
-    public void RoundTrip_MultiThreaded_ViaStream()
+    [Test]
+    public async Task RoundTrip_MultiThreaded_ViaStream()
     {
         byte[] original = new byte[2 * 1024 * 1024];
         for (int i = 0; i < original.Length; i++)
@@ -265,15 +258,15 @@ public class RoundTripTests
         using var xzIn = new XzDecompressStream(output);
         using var result = new MemoryStream();
         xzIn.CopyTo(result);
-        Assert.Equal(original, result.ToArray());
+        await Assert.That(result.ToArray().SequenceEqual(original)).IsTrue();
     }
 
-    [Theory]
-    [InlineData(0)]
-    [InlineData(3)]
-    [InlineData(6)]
-    [InlineData(9)]
-    public void RoundTrip_ExtremeFlag(int preset)
+    [Test]
+    [Arguments(0)]
+    [Arguments(3)]
+    [Arguments(6)]
+    [Arguments(9)]
+    public async Task RoundTrip_ExtremeFlag(int preset)
     {
         byte[] original = new byte[8192];
         for (int i = 0; i < original.Length; i++)
@@ -282,11 +275,11 @@ public class RoundTripTests
         var options = new XzCompressOptions { Preset = preset, Extreme = true };
         byte[] compressed = XzCompressor.Compress(original, options);
         byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
     }
 
-    [Fact]
-    public void RoundTrip_CompressOptions_AllSettings()
+    [Test]
+    public async Task RoundTrip_CompressOptions_AllSettings()
     {
         byte[] original = new byte[100_000];
         for (int i = 0; i < original.Length; i++)
@@ -298,16 +291,16 @@ public class RoundTripTests
             Extreme = true,
             Threads = 2,
             CheckType = XzCheckType.Crc32,
-            DictionarySize = 1 << 18, // 256 KB
-            BlockSize = 1 << 16,      // 64 KB blocks
+            DictionarySize = 1 << 18,
+            BlockSize = 1 << 16,
         };
         byte[] compressed = XzCompressor.Compress(original, options);
         byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
     }
 
-    [Fact]
-    public void RoundTrip_CompressOptions_ViaStream()
+    [Test]
+    public async Task RoundTrip_CompressOptions_ViaStream()
     {
         byte[] original = "Options via stream constructor test"u8.ToArray();
 
@@ -322,24 +315,20 @@ public class RoundTripTests
         using var xzIn = new XzDecompressStream(output);
         using var result = new MemoryStream();
         xzIn.CopyTo(result);
-        Assert.Equal(original, result.ToArray());
+        await Assert.That(result.ToArray().SequenceEqual(original)).IsTrue();
     }
 
-    [Fact]
-    public void CompressOptions_Validate_ThrowsOnInvalid()
+    [Test]
+    public async Task CompressOptions_Validate_ThrowsOnInvalid()
     {
-        Assert.Throws<ArgumentOutOfRangeException>(() =>
-            new XzCompressOptions { Preset = 10 }.Validate());
-        Assert.Throws<ArgumentOutOfRangeException>(() =>
-            new XzCompressOptions { Threads = -1 }.Validate());
-        Assert.Throws<ArgumentOutOfRangeException>(() =>
-            new XzCompressOptions { DictionarySize = 100 }.Validate());
-        Assert.Throws<ArgumentOutOfRangeException>(() =>
-            new XzCompressOptions { BlockSize = 1000 }.Validate());
+        await Assert.That(() => new XzCompressOptions { Preset = 10 }.Validate()).ThrowsExactly<ArgumentOutOfRangeException>();
+        await Assert.That(() => new XzCompressOptions { Threads = -1 }.Validate()).ThrowsExactly<ArgumentOutOfRangeException>();
+        await Assert.That(() => new XzCompressOptions { DictionarySize = 100 }.Validate()).ThrowsExactly<ArgumentOutOfRangeException>();
+        await Assert.That(() => new XzCompressOptions { BlockSize = 1000 }.Validate()).ThrowsExactly<ArgumentOutOfRangeException>();
     }
 
-    [Fact]
-    public void Extreme_ProducesSmallerOrEqualOutput()
+    [Test]
+    public async Task Extreme_ProducesSmallerOrEqualOutput()
     {
         byte[] original = new byte[32768];
         for (int i = 0; i < original.Length; i++)
@@ -348,33 +337,31 @@ public class RoundTripTests
         byte[] normalCompressed = XzCompressor.Compress(original, new XzCompressOptions { Preset = 6 });
         byte[] extremeCompressed = XzCompressor.Compress(original, new XzCompressOptions { Preset = 6, Extreme = true });
 
-        // Extreme should produce same or smaller output
-        Assert.True(extremeCompressed.Length <= normalCompressed.Length,
-            $"Extreme ({extremeCompressed.Length}) should be <= normal ({normalCompressed.Length})");
+        await Assert.That(extremeCompressed.Length <= normalCompressed.Length).IsTrue();
     }
 
-    [Theory]
-    [InlineData(0, false)]
-    [InlineData(1, false)]
-    [InlineData(2, false)]
-    [InlineData(3, false)]
-    [InlineData(4, false)]
-    [InlineData(5, false)]
-    [InlineData(6, false)]
-    [InlineData(7, false)]
-    [InlineData(8, false)]
-    [InlineData(9, false)]
-    [InlineData(0, true)]
-    [InlineData(1, true)]
-    [InlineData(2, true)]
-    [InlineData(3, true)]
-    [InlineData(4, true)]
-    [InlineData(5, true)]
-    [InlineData(6, true)]
-    [InlineData(7, true)]
-    [InlineData(8, true)]
-    [InlineData(9, true)]
-    public void RoundTrip_AllPresetsWithExtreme(int preset, bool extreme)
+    [Test]
+    [Arguments(0, false)]
+    [Arguments(1, false)]
+    [Arguments(2, false)]
+    [Arguments(3, false)]
+    [Arguments(4, false)]
+    [Arguments(5, false)]
+    [Arguments(6, false)]
+    [Arguments(7, false)]
+    [Arguments(8, false)]
+    [Arguments(9, false)]
+    [Arguments(0, true)]
+    [Arguments(1, true)]
+    [Arguments(2, true)]
+    [Arguments(3, true)]
+    [Arguments(4, true)]
+    [Arguments(5, true)]
+    [Arguments(6, true)]
+    [Arguments(7, true)]
+    [Arguments(8, true)]
+    [Arguments(9, true)]
+    public async Task RoundTrip_AllPresetsWithExtreme(int preset, bool extreme)
     {
         byte[] original = new byte[4096];
         for (int i = 0; i < original.Length; i++)
@@ -383,19 +370,18 @@ public class RoundTripTests
         var options = new XzCompressOptions { Preset = preset, Extreme = extreme };
         byte[] compressed = XzCompressor.Compress(original, options);
         byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
     }
 
-    [Theory]
-    [InlineData(0, false)]
-    [InlineData(0, true)]
-    [InlineData(6, false)]
-    [InlineData(6, true)]
-    [InlineData(9, false)]
-    [InlineData(9, true)]
-    public void RoundTrip_AllPresetsWithExtreme_LargeData(int preset, bool extreme)
+    [Test]
+    [Arguments(0, false)]
+    [Arguments(0, true)]
+    [Arguments(6, false)]
+    [Arguments(6, true)]
+    [Arguments(9, false)]
+    [Arguments(9, true)]
+    public async Task RoundTrip_AllPresetsWithExtreme_LargeData(int preset, bool extreme)
     {
-        // 64 KB of mixed data to exercise multi-chunk encoding at low presets
         byte[] original = new byte[65536];
         var rng = new Random(preset * 100 + (extreme ? 1 : 0));
         for (int i = 0; i < original.Length; i++)
@@ -404,15 +390,15 @@ public class RoundTripTests
         var options = new XzCompressOptions { Preset = preset, Extreme = extreme };
         byte[] compressed = XzCompressor.Compress(original, options);
         byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
     }
 
-    [Theory]
-    [InlineData(0)]
-    [InlineData(3)]
-    [InlineData(6)]
-    [InlineData(9)]
-    public void RoundTrip_AllPresetsViaStream(int preset)
+    [Test]
+    [Arguments(0)]
+    [Arguments(3)]
+    [Arguments(6)]
+    [Arguments(9)]
+    public async Task RoundTrip_AllPresetsViaStream(int preset)
     {
         byte[] original = new byte[2048];
         for (int i = 0; i < original.Length; i++)
@@ -429,6 +415,6 @@ public class RoundTripTests
         using var xzIn = new XzDecompressStream(output);
         using var result = new MemoryStream();
         xzIn.CopyTo(result);
-        Assert.Equal(original, result.ToArray());
+        await Assert.That(result.ToArray().SequenceEqual(original)).IsTrue();
     }
 }

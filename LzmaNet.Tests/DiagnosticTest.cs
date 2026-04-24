@@ -11,8 +11,8 @@ namespace LzmaNet.Tests;
 /// </summary>
 public class DiagnosticTest
 {
-    [Fact]
-    public void RangeCoder_SingleBit()
+    [Test]
+    public async Task RangeCoder_SingleBit()
     {
         ushort prob = 1024;
         using var ms = new MemoryStream();
@@ -26,13 +26,12 @@ public class DiagnosticTest
         prob = 1024;
         dec.Init(data.AsMemory(), 0);
         uint result = dec.DecodeBit(ref prob);
-        Assert.Equal(0u, result);
+        await Assert.That(result).IsEqualTo(0u);
     }
 
-    [Fact]
-    public void RangeCoder_BitSequence()
+    [Test]
+    public async Task RangeCoder_BitSequence()
     {
-        // Encode multiple bits
         ushort[] encProbs = new ushort[4];
         for (int i = 0; i < 4; i++) encProbs[i] = 1024;
 
@@ -52,16 +51,15 @@ public class DiagnosticTest
         var dec = new RangeDecoder();
         dec.Init(data.AsMemory(), 0);
 
-        Assert.Equal(0u, dec.DecodeBit(ref decProbs[0]));
-        Assert.Equal(1u, dec.DecodeBit(ref decProbs[1]));
-        Assert.Equal(0u, dec.DecodeBit(ref decProbs[2]));
-        Assert.Equal(1u, dec.DecodeBit(ref decProbs[3]));
+        await Assert.That(dec.DecodeBit(ref decProbs[0])).IsEqualTo(0u);
+        await Assert.That(dec.DecodeBit(ref decProbs[1])).IsEqualTo(1u);
+        await Assert.That(dec.DecodeBit(ref decProbs[2])).IsEqualTo(0u);
+        await Assert.That(dec.DecodeBit(ref decProbs[3])).IsEqualTo(1u);
     }
 
-    [Fact]
-    public void RangeCoder_BitTree()
+    [Test]
+    public async Task RangeCoder_BitTree()
     {
-        // Encode a value using a bit tree (like what LZMA uses for literals)
         ushort[] encProbs = new ushort[512];
         ushort[] decProbs = new ushort[512];
         RangeDecoder.InitProbs(encProbs);
@@ -70,7 +68,6 @@ public class DiagnosticTest
         using var ms = new MemoryStream();
         var enc = new RangeEncoder(ms);
 
-        // Encode value 42 in 8 bits (like a literal byte)
         enc.EncodeBitTree(encProbs, 0, 8, 42);
         enc.FlushData();
 
@@ -79,14 +76,13 @@ public class DiagnosticTest
         dec.Init(data.AsMemory(), 0);
 
         uint result = dec.DecodeBitTree(decProbs, 0, 8);
-        Assert.Equal(42u, result);
+        await Assert.That(result).IsEqualTo(42u);
     }
 
-    [Fact]
-    public void RangeCoder_MultipleLiterals()
+    [Test]
+    public async Task RangeCoder_MultipleLiterals()
     {
-        // Simulate encoding 3 bytes as LZMA literals
-        ushort[] encProbs = new ushort[8 * 0x300]; // 8 lit states * 0x300
+        ushort[] encProbs = new ushort[8 * 0x300];
         ushort[] decProbs = new ushort[8 * 0x300];
         RangeDecoder.InitProbs(encProbs);
         RangeDecoder.InitProbs(decProbs);
@@ -99,10 +95,9 @@ public class DiagnosticTest
         for (int i = 0; i < bytes.Length; i++)
         {
             int prevByte = i > 0 ? bytes[i - 1] : 0;
-            int litState = (prevByte >> 5); // simulating lc=3, lp=0
+            int litState = (prevByte >> 5);
             int probsOffset = litState * 0x300;
 
-            // Encode literal byte
             uint symbol = 1;
             for (int bit = 7; bit >= 0; bit--)
             {
@@ -127,14 +122,13 @@ public class DiagnosticTest
             for (int bit = 0; bit < 8; bit++)
                 symbol = (symbol << 1) | dec.DecodeBit(ref decProbs[probsOffset + symbol]);
             byte decoded = (byte)(symbol & 0xFF);
-            Assert.Equal(bytes[i], decoded);
+            await Assert.That(decoded).IsEqualTo(bytes[i]);
         }
     }
 
-    [Fact]
-    public void DirectLzma_TwoBytes_Literal()
+    [Test]
+    public async Task DirectLzma_TwoBytes_Literal()
     {
-        // Simplest case: 2 bytes, all literals, no matches
         var props = LzmaEncoderProperties.FromPreset(6);
         using var encoder = new LzmaEncoder(props);
         byte[] input = [0, 0];
@@ -148,44 +142,40 @@ public class DiagnosticTest
         byte[] output = new byte[2];
         int outPos = 0;
         decoder.Decode(compressed.AsMemory(), 0, window, output, ref outPos, 2);
-        Assert.Equal(input, output);
+        await Assert.That(output.SequenceEqual(input)).IsTrue();
     }
 
-    [Theory]
-    [InlineData(new byte[] { 65, 66, 67 })]
-    public void DirectLzma_DiverseBytes_StandaloneDecode(byte[] input)
+    [Test]
+    [Arguments(new byte[] { 65, 66, 67 })]
+    public async Task DirectLzma_DiverseBytes_StandaloneDecode(byte[] input)
     {
         var props = LzmaEncoderProperties.FromPreset(6);
         using var encoder = new LzmaEncoder(props);
         using var cs = new MemoryStream();
         long bytesWritten = encoder.Encode(input, cs);
         byte[] compressed = cs.ToArray();
-        Assert.Equal(bytesWritten, compressed.Length);
+        await Assert.That(compressed.Length).IsEqualTo((int)bytesWritten);
 
-        // Try decoding only 2 bytes (first N-1) to see if that works
         var decoder2 = new LzmaDecoder(props.Lc, props.Lp, props.Pb);
         decoder2.ResetState();
         var window2 = new OutputWindow(props.DictionarySize);
         byte[] output2 = new byte[input.Length - 1];
         int outPos2 = 0;
         decoder2.Decode(compressed.AsMemory(), 0, window2, output2, ref outPos2, input.Length - 1);
-        // Check first N-1 bytes are correct
-        Assert.Equal(input[..(input.Length - 1)], output2);
+        await Assert.That(output2.SequenceEqual(input[..(input.Length - 1)])).IsTrue();
 
-        // Now decode all bytes
         var decoder = new LzmaDecoder(props.Lc, props.Lp, props.Pb);
         decoder.ResetState();
         var window = new OutputWindow(props.DictionarySize);
         byte[] output = new byte[input.Length];
         int outPos = 0;
         decoder.Decode(compressed.AsMemory(), 0, window, output, ref outPos, input.Length);
-        Assert.Equal(input, output);
+        await Assert.That(output.SequenceEqual(input)).IsTrue();
     }
 
-    [Fact]
-    public void DirectLzma_LargerDiverseData()
+    [Test]
+    public async Task DirectLzma_LargerDiverseData()
     {
-        // Data with patterns that LZMA will compress (not fallback to uncompressed)
         var props = LzmaEncoderProperties.FromPreset(6);
         using var encoder = new LzmaEncoder(props);
 
@@ -197,8 +187,7 @@ public class DiagnosticTest
         encoder.Encode(input, cs);
         byte[] compressed = cs.ToArray();
 
-        // This should compress since it has repeating patterns
-        Assert.True(compressed.Length < input.Length, $"Expected compression, got {compressed.Length} >= {input.Length}");
+        await Assert.That(compressed.Length < input.Length).IsTrue();
 
         var decoder = new LzmaDecoder(props.Lc, props.Lp, props.Pb);
         decoder.ResetState();
@@ -206,13 +195,13 @@ public class DiagnosticTest
         byte[] output = new byte[input.Length];
         int outPos = 0;
         decoder.Decode(compressed.AsMemory(), 0, window, output, ref outPos, input.Length);
-        Assert.Equal(input, output);
+        await Assert.That(output.SequenceEqual(input)).IsTrue();
     }
 
-    [Theory]
-    [InlineData(new byte[] { 65, 66, 67 })]
-    [InlineData(new byte[] { 72, 101, 108, 108, 111 })] // Hello
-    public void DirectLzma_DiverseBytes_Lzma2ChunkDecode(byte[] input)
+    [Test]
+    [Arguments(new byte[] { 65, 66, 67 })]
+    [Arguments(new byte[] { 72, 101, 108, 108, 111 })]
+    public async Task DirectLzma_DiverseBytes_Lzma2ChunkDecode(byte[] input)
     {
         var props = LzmaEncoderProperties.FromPreset(6);
         using var encoder = new LzmaEncoder(props);
@@ -228,11 +217,11 @@ public class DiagnosticTest
         var rc = new RangeDecoder();
         rc.Init(compressed.AsMemory(), 0);
         decoder.DecodeLzma2Chunk(ref rc, window, output, ref outPos, input.Length);
-        Assert.Equal(input, output);
+        await Assert.That(output.SequenceEqual(input)).IsTrue();
     }
 
-    [Fact]
-    public void DirectLzma_FiveZeros()
+    [Test]
+    public async Task DirectLzma_FiveZeros()
     {
         var props = LzmaEncoderProperties.FromPreset(6);
         using var encoder = new LzmaEncoder(props);
@@ -247,17 +236,15 @@ public class DiagnosticTest
         byte[] output = new byte[5];
         int outPos = 0;
         decoder.Decode(compressed.AsMemory(), 0, window, output, ref outPos, 5);
-        Assert.Equal(input, output);
+        await Assert.That(output.SequenceEqual(input)).IsTrue();
     }
 
-    [Fact]
-    public void Lzma2_MultiChunk_RoundTrip()
+    [Test]
+    public async Task Lzma2_MultiChunk_RoundTrip()
     {
-        // Preset 0 has chunkSize=512KB, so 1MB data = 2 chunks
         var props = LzmaEncoderProperties.FromPreset(0);
         using var encoder = new Lzma2Encoder(props);
 
-        // 1MB of data that will span 2 LZMA2 chunks
         byte[] original = new byte[1024 * 1024];
         for (int i = 0; i < original.Length; i++)
             original[i] = (byte)(i % 37);
@@ -265,7 +252,6 @@ public class DiagnosticTest
         using var compressed = new MemoryStream();
         encoder.Encode(original.AsMemory(), compressed);
 
-        // Dump LZMA2 control bytes for debugging
         var compBytes = compressed.ToArray();
         int pos = 0;
         int chunkNum = 0;
@@ -298,24 +284,21 @@ public class DiagnosticTest
         }
         if (pos < compBytes.Length) msg.AppendLine($"End marker at offset {pos}: 0x{compBytes[pos]:X2}");
 
-        // Try decoding chunk by chunk manually
         try
         {
             byte[] output = new byte[original.Length + 1024];
             using var decoder = new Lzma2Decoder(props.DictionarySize);
             int decoded = decoder.Decode(compBytes.AsMemory(), output.AsSpan());
-            Assert.Equal(original.Length, decoded);
-            Assert.Equal(original, output[..decoded]);
+            await Assert.That(decoded).IsEqualTo(original.Length);
+            await Assert.That(output[..decoded].SequenceEqual(original)).IsTrue();
         }
         catch (Exception ex)
         {
-            // Try to find which chunk fails by decoding only the first N chunks
             int goodChunks = 0;
             for (int nChunks = 1; nChunks <= chunkNum; nChunks++)
             {
                 try
                 {
-                    // Build a truncated LZMA2 stream with only nChunks
                     int truncPos = 0;
                     for (int c = 0; c < nChunks && truncPos < compBytes.Length; c++)
                     {
@@ -324,11 +307,10 @@ public class DiagnosticTest
                         {
                             bool hp = ctrl2 >= 0xC0;
                             int us = ((ctrl2 & 0x1F) << 16) | (compBytes[truncPos+1] << 8) | compBytes[truncPos+2] + 1;
-                            int cs = (compBytes[truncPos+3] << 8) | compBytes[truncPos+4] + 1;
-                            truncPos += 5 + (hp ? 1 : 0) + cs;
+                            int cs2 = (compBytes[truncPos+3] << 8) | compBytes[truncPos+4] + 1;
+                            truncPos += 5 + (hp ? 1 : 0) + cs2;
                         }
                     }
-                    // Add end marker
                     byte[] truncated = new byte[truncPos + 1];
                     Buffer.BlockCopy(compBytes, 0, truncated, 0, truncPos);
                     truncated[truncPos] = 0x00;
@@ -343,7 +325,7 @@ public class DiagnosticTest
                     break;
                 }
             }
-            Assert.Fail($"Decode failed at chunk {goodChunks + 1} (0-indexed: {goodChunks}): {ex.Message}\n{msg}");
+            throw new Exception($"Decode failed at chunk {goodChunks + 1} (0-indexed: {goodChunks}): {ex.Message}\n{msg}");
         }
     }
 }

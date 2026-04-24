@@ -101,6 +101,53 @@ internal static class XzIndex
         return output.Position - startPos;
     }
 
+    /// <summary>
+    /// Asynchronously writes the XZ index to the output stream.
+    /// </summary>
+    /// <param name="output">Output stream.</param>
+    /// <param name="records">List of (unpaddedSize, uncompressedSize) tuples.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Total size of the index (including indicator, padding, CRC32).</returns>
+    public static async Task<long> WriteIndexAsync(Stream output,
+        IReadOnlyList<(long unpaddedSize, long uncompressedSize)> records,
+        CancellationToken cancellationToken = default)
+    {
+        long startPos = output.Position;
+
+        using var indexData = new MemoryStream();
+
+        // Index indicator
+        indexData.WriteByte(0x00);
+
+        // Number of records
+        WriteMultibyteInt(indexData, (ulong)records.Count);
+
+        // Records
+        foreach (var (unpaddedSize, uncompressedSize) in records)
+        {
+            WriteMultibyteInt(indexData, (ulong)unpaddedSize);
+            WriteMultibyteInt(indexData, (ulong)uncompressedSize);
+        }
+
+        // Padding
+        int contentSize = (int)indexData.Length;
+        int paddedSize = ((contentSize + 3) / 4) * 4;
+        int paddingSize = paddedSize - contentSize;
+        for (int i = 0; i < paddingSize; i++)
+            indexData.WriteByte(0);
+
+        // Write index data async
+        byte[] indexBytes = indexData.ToArray();
+        await output.WriteAsync(indexBytes, cancellationToken).ConfigureAwait(false);
+
+        // CRC32
+        byte[] crc = new byte[4];
+        Crc32.WriteLE(indexBytes.AsSpan(), crc);
+        await output.WriteAsync(crc, cancellationToken).ConfigureAwait(false);
+
+        return output.Position - startPos;
+    }
+
     private static ulong ReadMultibyteIntAndCopy(Stream stream, MemoryStream copy)
     {
         ulong result = 0;
