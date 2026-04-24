@@ -64,6 +64,7 @@ internal static class XzConstants
     /// <summary>
     /// Gets the size in bytes for the given check type.
     /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static int GetCheckSize(int checkType) => checkType switch
     {
         0 => 0,

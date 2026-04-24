@@ -160,6 +160,7 @@ internal struct RangeDecoder
     /// <summary>
     /// Initializes an array of probability values to their default (0.5 probability).
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void InitProbs(ushort[] probs)
     {
         const ushort kProbInitValue = (ushort)(kBitModelTotal >> 1); // 1024
@@ -169,6 +170,7 @@ internal struct RangeDecoder
     /// <summary>
     /// Initializes a segment of probability values to their default.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void InitProbs(ushort[] probs, int offset, int count)
     {
         const ushort kProbInitValue = (ushort)(kBitModelTotal >> 1);

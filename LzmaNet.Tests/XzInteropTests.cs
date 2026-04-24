@@ -9,9 +9,340 @@ namespace LzmaNet.Tests;
 /// Tests both directions: compress with LzmaNet / decompress with xz,
 /// and compress with xz / decompress with LzmaNet.
 /// </summary>
+[RequiresXz]
 public class XzInteropTests
 {
-    private static readonly bool XzAvailable = CheckXzAvailable();
+    // ---------------------------------------------------------------
+    //  Compress with LzmaNet -> Decompress with xz
+    // ---------------------------------------------------------------
+
+    [Test]
+    public async Task LzmaNetCompress_XzDecompress_Empty()
+    {
+        byte[] original = [];
+        byte[] compressed = await XzCompressor.CompressAsync(original);
+        byte[] decompressed = await XzDecompressAsync(compressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    public async Task LzmaNetCompress_XzDecompress_SingleByte()
+    {
+        byte[] original = [0x42];
+        byte[] compressed = await XzCompressor.CompressAsync(original);
+        byte[] decompressed = await XzDecompressAsync(compressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    public async Task LzmaNetCompress_XzDecompress_SmallText()
+    {
+        byte[] original = "Hello, World!"u8.ToArray();
+        byte[] compressed = await XzCompressor.CompressAsync(original);
+        byte[] decompressed = await XzDecompressAsync(compressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    public async Task LzmaNetCompress_XzDecompress_AllZeros()
+    {
+        byte[] original = new byte[4096];
+        byte[] compressed = await XzCompressor.CompressAsync(original);
+        byte[] decompressed = await XzDecompressAsync(compressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    public async Task LzmaNetCompress_XzDecompress_RepeatingPattern()
+    {
+        byte[] original = new byte[10_000];
+        for (int i = 0; i < original.Length; i++)
+            original[i] = (byte)(i % 251);
+
+        byte[] compressed = await XzCompressor.CompressAsync(original);
+        byte[] decompressed = await XzDecompressAsync(compressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    public async Task LzmaNetCompress_XzDecompress_RandomData()
+    {
+        byte[] original = new byte[65_536];
+        new Random(98765).NextBytes(original);
+
+        byte[] compressed = await XzCompressor.CompressAsync(original);
+        byte[] decompressed = await XzDecompressAsync(compressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    public async Task LzmaNetCompress_XzDecompress_TextData()
+    {
+        string text = string.Join("\n", Enumerable.Range(0, 200)
+            .Select(i => $"Line {i}: The quick brown fox jumps over the lazy dog."));
+        byte[] original = System.Text.Encoding.UTF8.GetBytes(text);
+
+        byte[] compressed = await XzCompressor.CompressAsync(original);
+        byte[] decompressed = await XzDecompressAsync(compressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(3)]
+    [Arguments(6)]
+    [Arguments(9)]
+    public async Task LzmaNetCompress_XzDecompress_AllPresets(int preset)
+    {
+        byte[] original = new byte[4096];
+        for (int i = 0; i < original.Length; i++)
+            original[i] = (byte)(i * 7 + i / 13);
+
+        byte[] compressed = await XzCompressor.CompressAsync(original, new XzCompressOptions { Preset = preset });
+        byte[] decompressed = await XzDecompressAsync(compressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    [Arguments(XzCheckType.None)]
+    [Arguments(XzCheckType.Crc32)]
+    [Arguments(XzCheckType.Crc64)]
+    public async Task LzmaNetCompress_XzDecompress_CheckTypes(XzCheckType checkType)
+    {
+        byte[] original = "Integrity check interop test"u8.ToArray();
+        byte[] compressed = await XzCompressor.CompressAsync(original, new XzCompressOptions { CheckType = checkType });
+        byte[] decompressed = await XzDecompressAsync(compressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
+    }
+
+    // ---------------------------------------------------------------
+    //  Compress with xz -> Decompress with LzmaNet
+    // ---------------------------------------------------------------
+
+    [Test]
+    public async Task XzCompress_LzmaNetDecompress_Empty()
+    {
+        byte[] original = [];
+        byte[] compressed = await XzCompressAsync(original);
+        byte[] decompressed = await XzCompressor.DecompressAsync(compressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    public async Task XzCompress_LzmaNetDecompress_SingleByte()
+    {
+        byte[] original = [0x42];
+        byte[] compressed = await XzCompressAsync(original);
+        byte[] decompressed = await XzCompressor.DecompressAsync(compressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    public async Task XzCompress_LzmaNetDecompress_SmallText()
+    {
+        byte[] original = "Hello, World!"u8.ToArray();
+        byte[] compressed = await XzCompressAsync(original);
+        byte[] decompressed = await XzCompressor.DecompressAsync(compressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    public async Task XzCompress_LzmaNetDecompress_AllZeros()
+    {
+        byte[] original = new byte[4096];
+        byte[] compressed = await XzCompressAsync(original);
+        byte[] decompressed = await XzCompressor.DecompressAsync(compressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    public async Task XzCompress_LzmaNetDecompress_RepeatingPattern()
+    {
+        byte[] original = new byte[10_000];
+        for (int i = 0; i < original.Length; i++)
+            original[i] = (byte)(i % 251);
+
+        byte[] compressed = await XzCompressAsync(original);
+        byte[] decompressed = await XzCompressor.DecompressAsync(compressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    public async Task XzCompress_LzmaNetDecompress_RandomData()
+    {
+        byte[] original = new byte[65_536];
+        new Random(12345).NextBytes(original);
+
+        byte[] compressed = await XzCompressAsync(original);
+        byte[] decompressed = await XzCompressor.DecompressAsync(compressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    public async Task XzCompress_LzmaNetDecompress_TextData()
+    {
+        string text = string.Join("\n", Enumerable.Range(0, 200)
+            .Select(i => $"Line {i}: The quick brown fox jumps over the lazy dog."));
+        byte[] original = System.Text.Encoding.UTF8.GetBytes(text);
+
+        byte[] compressed = await XzCompressAsync(original);
+        byte[] decompressed = await XzCompressor.DecompressAsync(compressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(3)]
+    [Arguments(6)]
+    [Arguments(9)]
+    public async Task XzCompress_LzmaNetDecompress_AllPresets(int preset)
+    {
+        byte[] original = new byte[4096];
+        for (int i = 0; i < original.Length; i++)
+            original[i] = (byte)(i * 7 + i / 13);
+
+        byte[] compressed = await XzCompressAsync(original, $"-{preset}");
+        byte[] decompressed = await XzCompressor.DecompressAsync(compressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    [Arguments("none")]
+    [Arguments("crc32")]
+    [Arguments("crc64")]
+    public async Task XzCompress_LzmaNetDecompress_CheckTypes(string checkName)
+    {
+        byte[] original = "Integrity check interop test"u8.ToArray();
+        byte[] compressed = await XzCompressAsync(original, $"--check={checkName}");
+        byte[] decompressed = await XzCompressor.DecompressAsync(compressed);
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
+    }
+
+    // ---------------------------------------------------------------
+    //  Cross-verify: both directions with same data
+    // ---------------------------------------------------------------
+
+    [Test]
+    public async Task CrossVerify_LargeCompressibleData()
+    {
+        byte[] pattern = "ABCDEFGHIJKLMNOP"u8.ToArray();
+        byte[] original = new byte[100_000];
+        for (int i = 0; i < original.Length; i++)
+            original[i] = pattern[i % pattern.Length];
+
+        byte[] ourCompressed = await XzCompressor.CompressAsync(original);
+        byte[] xzDecompressed = await XzDecompressAsync(ourCompressed);
+        await Assert.That(xzDecompressed.SequenceEqual(original)).IsTrue();
+
+        byte[] xzCompressed = await XzCompressAsync(original);
+        byte[] ourDecompressed = await XzCompressor.DecompressAsync(xzCompressed);
+        await Assert.That(ourDecompressed.SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    public async Task CrossVerify_StreamApi()
+    {
+        byte[] original = new byte[8192];
+        new Random(42).NextBytes(original);
+
+        using var compressedStream = new MemoryStream();
+        await using (var xzOut = new XzCompressStream(compressedStream, leaveOpen: true))
+        {
+            int offset = 0;
+            while (offset < original.Length)
+            {
+                int chunkSize = Math.Min(137, original.Length - offset);
+                await xzOut.WriteAsync(original.AsMemory(offset, chunkSize));
+                offset += chunkSize;
+            }
+        }
+
+        byte[] decompressed = await XzDecompressAsync(compressedStream.ToArray());
+        await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    public async Task CrossVerify_StreamDecompress_XzCompressed()
+    {
+        byte[] original = new byte[8192];
+        new Random(42).NextBytes(original);
+
+        byte[] compressed = await XzCompressAsync(original);
+
+        using var inputStream = new MemoryStream(compressed);
+        await using var xzIn = new XzDecompressStream(inputStream);
+        using var outputStream = new MemoryStream();
+
+        await xzIn.CopyToAsync(outputStream);
+
+        await Assert.That(outputStream.ToArray().SequenceEqual(original)).IsTrue();
+    }
+
+    // ---------------------------------------------------------------
+    //  Helpers: shell out to the xz executable
+    // ---------------------------------------------------------------
+
+    private static async Task<byte[]> XzCompressAsync(byte[] data, string extraArgs = "")
+    {
+        return await RunXzAsync($"--compress --stdout --force {extraArgs}", data);
+    }
+
+    private static async Task<byte[]> XzDecompressAsync(byte[] data)
+    {
+        return await RunXzAsync("--decompress --stdout --force", data);
+    }
+
+    private static async Task<byte[]> RunXzAsync(string arguments, byte[] stdin)
+    {
+        using var proc = new Process();
+        proc.StartInfo = new ProcessStartInfo
+        {
+            FileName = "xz",
+            Arguments = arguments,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+
+        proc.Start();
+
+        var writeTask = Task.Run(async () =>
+        {
+            await proc.StandardInput.BaseStream.WriteAsync(stdin);
+            proc.StandardInput.Close();
+        });
+
+        using var outputStream = new MemoryStream();
+        var stdoutTask = proc.StandardOutput.BaseStream.CopyToAsync(outputStream);
+        var stderrTask = proc.StandardError.ReadToEndAsync();
+
+        await Task.WhenAll(writeTask, stdoutTask);
+        string stderr = await stderrTask;
+        await proc.WaitForExitAsync();
+
+        if (proc.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"xz exited with code {proc.ExitCode}: {stderr}");
+
+        return outputStream.ToArray();
+    }
+}
+
+/// <summary>
+/// Skips all tests in the class when the xz command-line tool is not available.
+/// </summary>
+public class RequiresXzAttribute : SkipAttribute
+{
+    public RequiresXzAttribute() : base("xz command-line tool is not available") { }
+
+    public override Task<bool> ShouldSkip(TestRegisteredContext context)
+    {
+        return Task.FromResult(!CheckXzAvailable());
+    }
 
     private static bool CheckXzAvailable()
     {
@@ -33,389 +364,5 @@ public class XzInteropTests
         {
             return false;
         }
-    }
-
-    private static string SkipReason => "xz command-line tool is not available";
-
-    private static void SkipIfNoXz()
-    {
-        Assert.SkipWhen(!XzAvailable, SkipReason);
-    }
-
-    // ---------------------------------------------------------------
-    //  Compress with LzmaNet → Decompress with xz
-    // ---------------------------------------------------------------
-
-    [Fact]
-    public void LzmaNetCompress_XzDecompress_Empty()
-    {
-        SkipIfNoXz();
-
-        byte[] original = [];
-        byte[] compressed = XzCompressor.Compress(original);
-        byte[] decompressed = XzDecompress(compressed);
-        Assert.Equal(original, decompressed);
-    }
-
-    [Fact]
-    public void LzmaNetCompress_XzDecompress_SingleByte()
-    {
-        SkipIfNoXz();
-
-        byte[] original = [0x42];
-        byte[] compressed = XzCompressor.Compress(original);
-        byte[] decompressed = XzDecompress(compressed);
-        Assert.Equal(original, decompressed);
-    }
-
-    [Fact]
-    public void LzmaNetCompress_XzDecompress_SmallText()
-    {
-        SkipIfNoXz();
-
-        byte[] original = "Hello, World!"u8.ToArray();
-        byte[] compressed = XzCompressor.Compress(original);
-        byte[] decompressed = XzDecompress(compressed);
-        Assert.Equal(original, decompressed);
-    }
-
-    [Fact]
-    public void LzmaNetCompress_XzDecompress_AllZeros()
-    {
-        SkipIfNoXz();
-
-        byte[] original = new byte[4096];
-        byte[] compressed = XzCompressor.Compress(original);
-        byte[] decompressed = XzDecompress(compressed);
-        Assert.Equal(original, decompressed);
-    }
-
-    [Fact]
-    public void LzmaNetCompress_XzDecompress_RepeatingPattern()
-    {
-        SkipIfNoXz();
-
-        byte[] original = new byte[10_000];
-        for (int i = 0; i < original.Length; i++)
-            original[i] = (byte)(i % 251);
-
-        byte[] compressed = XzCompressor.Compress(original);
-        byte[] decompressed = XzDecompress(compressed);
-        Assert.Equal(original, decompressed);
-    }
-
-    [Fact]
-    public void LzmaNetCompress_XzDecompress_RandomData()
-    {
-        SkipIfNoXz();
-
-        byte[] original = new byte[65_536];
-        new Random(98765).NextBytes(original);
-
-        byte[] compressed = XzCompressor.Compress(original);
-        byte[] decompressed = XzDecompress(compressed);
-        Assert.Equal(original, decompressed);
-    }
-
-    [Fact]
-    public void LzmaNetCompress_XzDecompress_TextData()
-    {
-        SkipIfNoXz();
-
-        string text = string.Join("\n", Enumerable.Range(0, 200)
-            .Select(i => $"Line {i}: The quick brown fox jumps over the lazy dog."));
-        byte[] original = System.Text.Encoding.UTF8.GetBytes(text);
-
-        byte[] compressed = XzCompressor.Compress(original);
-        byte[] decompressed = XzDecompress(compressed);
-        Assert.Equal(original, decompressed);
-    }
-
-    [Theory]
-    [InlineData(0)]
-    [InlineData(1)]
-    [InlineData(3)]
-    [InlineData(6)]
-    [InlineData(9)]
-    public void LzmaNetCompress_XzDecompress_AllPresets(int preset)
-    {
-        SkipIfNoXz();
-
-        byte[] original = new byte[4096];
-        for (int i = 0; i < original.Length; i++)
-            original[i] = (byte)(i * 7 + i / 13);
-
-        byte[] compressed = XzCompressor.Compress(original, new XzCompressOptions { Preset = preset });
-        byte[] decompressed = XzDecompress(compressed);
-        Assert.Equal(original, decompressed);
-    }
-
-    [Theory]
-    [InlineData(XzCheckType.None)]
-    [InlineData(XzCheckType.Crc32)]
-    [InlineData(XzCheckType.Crc64)]
-    public void LzmaNetCompress_XzDecompress_CheckTypes(XzCheckType checkType)
-    {
-        SkipIfNoXz();
-
-        byte[] original = "Integrity check interop test"u8.ToArray();
-        byte[] compressed = XzCompressor.Compress(original, new XzCompressOptions { CheckType = checkType });
-        byte[] decompressed = XzDecompress(compressed);
-        Assert.Equal(original, decompressed);
-    }
-
-    // ---------------------------------------------------------------
-    //  Compress with xz → Decompress with LzmaNet
-    // ---------------------------------------------------------------
-
-    [Fact]
-    public void XzCompress_LzmaNetDecompress_Empty()
-    {
-        SkipIfNoXz();
-
-        byte[] original = [];
-        byte[] compressed = XzCompress(original);
-        byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
-    }
-
-    [Fact]
-    public void XzCompress_LzmaNetDecompress_SingleByte()
-    {
-        SkipIfNoXz();
-
-        byte[] original = [0x42];
-        byte[] compressed = XzCompress(original);
-        byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
-    }
-
-    [Fact]
-    public void XzCompress_LzmaNetDecompress_SmallText()
-    {
-        SkipIfNoXz();
-
-        byte[] original = "Hello, World!"u8.ToArray();
-        byte[] compressed = XzCompress(original);
-        byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
-    }
-
-    [Fact]
-    public void XzCompress_LzmaNetDecompress_AllZeros()
-    {
-        SkipIfNoXz();
-
-        byte[] original = new byte[4096];
-        byte[] compressed = XzCompress(original);
-        byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
-    }
-
-    [Fact]
-    public void XzCompress_LzmaNetDecompress_RepeatingPattern()
-    {
-        SkipIfNoXz();
-
-        byte[] original = new byte[10_000];
-        for (int i = 0; i < original.Length; i++)
-            original[i] = (byte)(i % 251);
-
-        byte[] compressed = XzCompress(original);
-        byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
-    }
-
-    [Fact]
-    public void XzCompress_LzmaNetDecompress_RandomData()
-    {
-        SkipIfNoXz();
-
-        byte[] original = new byte[65_536];
-        new Random(12345).NextBytes(original);
-
-        byte[] compressed = XzCompress(original);
-        byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
-    }
-
-    [Fact]
-    public void XzCompress_LzmaNetDecompress_TextData()
-    {
-        SkipIfNoXz();
-
-        string text = string.Join("\n", Enumerable.Range(0, 200)
-            .Select(i => $"Line {i}: The quick brown fox jumps over the lazy dog."));
-        byte[] original = System.Text.Encoding.UTF8.GetBytes(text);
-
-        byte[] compressed = XzCompress(original);
-        byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
-    }
-
-    [Theory]
-    [InlineData(0)]
-    [InlineData(1)]
-    [InlineData(3)]
-    [InlineData(6)]
-    [InlineData(9)]
-    public void XzCompress_LzmaNetDecompress_AllPresets(int preset)
-    {
-        SkipIfNoXz();
-
-        byte[] original = new byte[4096];
-        for (int i = 0; i < original.Length; i++)
-            original[i] = (byte)(i * 7 + i / 13);
-
-        byte[] compressed = XzCompress(original, $"-{preset}");
-        byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
-    }
-
-    [Theory]
-    [InlineData("none")]
-    [InlineData("crc32")]
-    [InlineData("crc64")]
-    public void XzCompress_LzmaNetDecompress_CheckTypes(string checkName)
-    {
-        SkipIfNoXz();
-
-        byte[] original = "Integrity check interop test"u8.ToArray();
-        byte[] compressed = XzCompress(original, $"--check={checkName}");
-        byte[] decompressed = XzCompressor.Decompress(compressed);
-        Assert.Equal(original, decompressed);
-    }
-
-    // ---------------------------------------------------------------
-    //  Cross-verify: both directions with same data
-    // ---------------------------------------------------------------
-
-    [Fact]
-    public void CrossVerify_LargeCompressibleData()
-    {
-        SkipIfNoXz();
-
-        byte[] pattern = "ABCDEFGHIJKLMNOP"u8.ToArray();
-        byte[] original = new byte[100_000];
-        for (int i = 0; i < original.Length; i++)
-            original[i] = pattern[i % pattern.Length];
-
-        // Our compress → xz decompress
-        byte[] ourCompressed = XzCompressor.Compress(original);
-        byte[] xzDecompressed = XzDecompress(ourCompressed);
-        Assert.Equal(original, xzDecompressed);
-
-        // xz compress → our decompress
-        byte[] xzCompressed = XzCompress(original);
-        byte[] ourDecompressed = XzCompressor.Decompress(xzCompressed);
-        Assert.Equal(original, ourDecompressed);
-    }
-
-    [Fact]
-    public void CrossVerify_StreamApi()
-    {
-        SkipIfNoXz();
-
-        byte[] original = new byte[8192];
-        new Random(42).NextBytes(original);
-
-        // Compress via our stream API
-        using var compressedStream = new MemoryStream();
-        using (var xzOut = new XzCompressStream(compressedStream, leaveOpen: true))
-        {
-            // Write in small chunks to exercise the stream
-            int offset = 0;
-            while (offset < original.Length)
-            {
-                int chunkSize = Math.Min(137, original.Length - offset); // odd size
-                xzOut.Write(original, offset, chunkSize);
-                offset += chunkSize;
-            }
-        }
-
-        // Decompress with xz tool
-        byte[] decompressed = XzDecompress(compressedStream.ToArray());
-        Assert.Equal(original, decompressed);
-    }
-
-    [Fact]
-    public void CrossVerify_StreamDecompress_XzCompressed()
-    {
-        SkipIfNoXz();
-
-        byte[] original = new byte[8192];
-        new Random(42).NextBytes(original);
-
-        // Compress with xz tool
-        byte[] compressed = XzCompress(original);
-
-        // Decompress via our stream API, reading in small chunks
-        using var inputStream = new MemoryStream(compressed);
-        using var xzIn = new XzDecompressStream(inputStream);
-        using var outputStream = new MemoryStream();
-
-        byte[] readBuf = new byte[100]; // small reads
-        int read;
-        while ((read = xzIn.Read(readBuf, 0, readBuf.Length)) > 0)
-            outputStream.Write(readBuf, 0, read);
-
-        Assert.Equal(original, outputStream.ToArray());
-    }
-
-    // ---------------------------------------------------------------
-    //  Helpers: shell out to the xz executable
-    // ---------------------------------------------------------------
-
-    /// <summary>
-    /// Compresses data using the xz command-line tool.
-    /// </summary>
-    private static byte[] XzCompress(byte[] data, string extraArgs = "")
-    {
-        return RunXz($"--compress --stdout --force {extraArgs}", data);
-    }
-
-    /// <summary>
-    /// Decompresses data using the xz command-line tool.
-    /// </summary>
-    private static byte[] XzDecompress(byte[] data)
-    {
-        return RunXz("--decompress --stdout --force", data);
-    }
-
-    private static byte[] RunXz(string arguments, byte[] stdin)
-    {
-        using var proc = new Process();
-        proc.StartInfo = new ProcessStartInfo
-        {
-            FileName = "xz",
-            Arguments = arguments,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
-
-        proc.Start();
-
-        // Write stdin on a background thread to avoid deadlock
-        var writeTask = Task.Run(() =>
-        {
-            proc.StandardInput.BaseStream.Write(stdin);
-            proc.StandardInput.Close();
-        });
-
-        using var outputStream = new MemoryStream();
-        proc.StandardOutput.BaseStream.CopyTo(outputStream);
-
-        string stderr = proc.StandardError.ReadToEnd();
-        proc.WaitForExit(30_000);
-        writeTask.Wait(5_000);
-
-        if (proc.ExitCode != 0)
-            throw new InvalidOperationException(
-                $"xz exited with code {proc.ExitCode}: {stderr}");
-
-        return outputStream.ToArray();
     }
 }

@@ -73,6 +73,22 @@ public sealed class XzDecompressStream : Stream
     }
 
     /// <inheritdoc/>
+    public override Task<int> ReadAsync(byte[] buffer, int offset, int count,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(Read(buffer.AsSpan(offset, count)));
+    }
+
+    /// <inheritdoc/>
+    public override ValueTask<int> ReadAsync(Memory<byte> buffer,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return new ValueTask<int>(Read(buffer.Span));
+    }
+
+    /// <inheritdoc/>
     public override int Read(Span<byte> buffer)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
