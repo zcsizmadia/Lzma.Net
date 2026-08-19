@@ -60,6 +60,14 @@ This is a core design principle. Always prefer:
 - `stackalloc` for small fixed-size buffers
 - Avoid `byte[]` allocations in hot paths
 
+### Performance-Critical Code (hot loops)
+- `RangeDecoder` is a **ref struct** over `ReadOnlySpan<byte>` — it cannot be stored in fields, captured in lambdas, or live across `await`; pass it by `ref`
+- The LZMA decoder uses **output-as-window**: the block's output buffer is the dictionary (XZ blocks always start with a dict reset), so there is no separate sliding-window buffer (`OutputWindow` was removed)
+- Hot-loop state (range, code, LZMA state, rep distances) is hoisted into locals and written back once per chunk — keep it that way
+- Probability arrays are accessed via `MemoryMarshal.GetArrayDataReference` + `Unsafe.Add` to skip bounds checks; the index invariants are established by array construction — don't change sizes without checking indices
+- CRC32/CRC64 use slicing-by-8; the match finder uses power-of-two masked chain slots and 8-byte word compares
+- The `Lzma2Encoder` caps the match-finder window at the chunk size (chunks are independent) — per-chunk table resets must stay small
+
 ### Testing
 - **TUnit** — the test project requires `<OutputType>Exe</OutputType>` and `<IsTestProject>true</IsTestProject>`
 - Uses Microsoft.Testing.Platform runner (configured via `global.json`)

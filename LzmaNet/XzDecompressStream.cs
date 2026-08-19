@@ -23,6 +23,7 @@ public sealed class XzDecompressStream : Stream
 {
     private readonly Stream _baseStream;
     private readonly bool _leaveOpen;
+    private readonly int _threads;
     private byte[]? _blockBuffer;
     private int _blockBufferPos;
     private int _blockBufferLen;
@@ -33,7 +34,9 @@ public sealed class XzDecompressStream : Stream
     private int _checkType;
     private bool _headerRead;
     private bool _isFirstStream = true;
+    private bool _indexIndicatorSeen;
     private readonly List<(long unpaddedSize, long uncompressedSize)> _blockRecords = new();
+    private readonly Queue<XzBlock.BlockBufferResult> _decodedBlocks = new();
 
     /// <summary>
     /// Initializes a new <see cref="XzDecompressStream"/> that reads compressed data
@@ -43,8 +46,28 @@ public sealed class XzDecompressStream : Stream
     /// <param name="leaveOpen">If <c>true</c>, the underlying stream is not closed when this stream is disposed.</param>
     /// <exception cref="ArgumentNullException"><paramref name="stream"/> is <c>null</c>.</exception>
     public XzDecompressStream(Stream stream, bool leaveOpen = false)
+        : this(stream, threads: 1, leaveOpen)
+    {
+    }
+
+    /// <summary>
+    /// Initializes a new <see cref="XzDecompressStream"/> that reads compressed data
+    /// from the specified stream, optionally decoding XZ blocks in parallel.
+    /// </summary>
+    /// <param name="stream">The stream containing XZ compressed data.</param>
+    /// <param name="threads">Number of decoder threads: 0 = use all available CPUs,
+    /// 1 = single-threaded, N = use up to N threads. Parallelism applies per XZ block,
+    /// so it only helps for multi-block streams; single-block streams decode serially.
+    /// Up to <paramref name="threads"/> decoded blocks are buffered in memory at once.</param>
+    /// <param name="leaveOpen">If <c>true</c>, the underlying stream is not closed when this stream is disposed.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="stream"/> is <c>null</c>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="threads"/> is negative.</exception>
+    public XzDecompressStream(Stream stream, int threads, bool leaveOpen = false)
     {
         _baseStream = stream ?? throw new ArgumentNullException(nameof(stream));
+        if (threads < 0)
+            throw new ArgumentOutOfRangeException(nameof(threads), "Threads must be >= 0.");
+        _threads = threads == 0 ? Environment.ProcessorCount : threads;
         _leaveOpen = leaveOpen;
     }
 
@@ -140,6 +163,7 @@ public sealed class XzDecompressStream : Stream
                 _headerRead = true;
                 _allBlocksRead = false;
                 _streamFinalized = false;
+                _indexIndicatorSeen = false;
                 _blockRecords.Clear();
             }
 
@@ -150,21 +174,7 @@ public sealed class XzDecompressStream : Stream
                 {
                     // Read and cross-validate index
                     long indexSize = XzIndex.ReadIndex(_baseStream, out var indexRecords);
-
-                    // Cross-validate: number of records must match blocks decoded
-                    if (indexRecords.Count != _blockRecords.Count)
-                        throw new LzmaDataErrorException(
-                            $"XZ index record count ({indexRecords.Count}) does not match block count ({_blockRecords.Count}).");
-
-                    for (int i = 0; i < indexRecords.Count; i++)
-                    {
-                        if (indexRecords[i].unpaddedSize != _blockRecords[i].unpaddedSize)
-                            throw new LzmaDataErrorException(
-                                $"XZ index unpadded size mismatch at block {i}.");
-                        if (indexRecords[i].uncompressedSize != _blockRecords[i].uncompressedSize)
-                            throw new LzmaDataErrorException(
-                                $"XZ index uncompressed size mismatch at block {i}.");
-                    }
+                    ValidateIndexRecords(indexRecords);
 
                     // Read and validate footer
                     ReadExact(_baseStream, footerBuf);
@@ -177,6 +187,34 @@ public sealed class XzDecompressStream : Stream
 
                     _streamFinalized = true;
                     _headerRead = false; // Allow reading next concatenated stream
+                }
+                continue;
+            }
+
+            if (_threads > 1)
+            {
+                // Parallel mode: read raw blocks in batches and decode them concurrently.
+                if (_decodedBlocks.Count == 0 && !_indexIndicatorSeen)
+                    FillDecodedBlocks();
+
+                if (_decodedBlocks.Count == 0)
+                {
+                    _allBlocksRead = true;
+                    continue;
+                }
+
+                XzBlock.BlockBufferResult decoded = _decodedBlocks.Dequeue();
+                _blockRecords.Add((decoded.UnpaddedSize, decoded.UncompressedSize));
+
+                if (decoded.Length > 0)
+                {
+                    _blockBuffer = decoded.Buffer;
+                    _blockBufferLen = decoded.Length;
+                    _blockBufferPos = 0;
+                }
+                else if (decoded.Buffer != null)
+                {
+                    ArrayPool<byte>.Shared.Return(decoded.Buffer);
                 }
                 continue;
             }
@@ -205,6 +243,77 @@ public sealed class XzDecompressStream : Stream
         }
 
         return totalCopied;
+    }
+
+    /// <summary>
+    /// Reads up to <see cref="_threads"/> raw blocks from the base stream (sequential I/O)
+    /// and decodes them in parallel (CPU-bound), queueing the results in stream order.
+    /// </summary>
+    private void FillDecodedBlocks()
+    {
+        var rawBlocks = new List<MemoryStream>();
+        try
+        {
+            while (rawBlocks.Count < _threads)
+            {
+                if (!XzBlock.ReadRawBlock(_baseStream, _checkType, out MemoryStream? raw))
+                {
+                    _indexIndicatorSeen = true;
+                    break;
+                }
+                rawBlocks.Add(raw!);
+            }
+
+            if (rawBlocks.Count == 0)
+                return;
+
+            var results = new XzBlock.BlockBufferResult[rawBlocks.Count];
+
+            if (rawBlocks.Count == 1)
+            {
+                results[0] = DecodeRawBlock(rawBlocks[0], _checkType);
+            }
+            else
+            {
+                int checkType = _checkType;
+                try
+                {
+                    Parallel.For(0, rawBlocks.Count,
+                        new ParallelOptions { MaxDegreeOfParallelism = _threads },
+                        i => results[i] = DecodeRawBlock(rawBlocks[i], checkType));
+                }
+                catch (AggregateException ae)
+                {
+                    // Return any pooled buffers from blocks that did decode, then
+                    // surface the original exception type (tests and callers expect
+                    // LzmaDataErrorException, not AggregateException).
+                    foreach (var result in results)
+                    {
+                        if (result.Buffer != null)
+                            ArrayPool<byte>.Shared.Return(result.Buffer);
+                    }
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo
+                        .Capture(ae.InnerExceptions[0]).Throw();
+                }
+            }
+
+            foreach (var result in results)
+                _decodedBlocks.Enqueue(result);
+        }
+        finally
+        {
+            foreach (var raw in rawBlocks)
+                raw.Dispose();
+        }
+    }
+
+    private static XzBlock.BlockBufferResult DecodeRawBlock(MemoryStream raw, int checkType)
+    {
+        bool hasBlock = XzBlock.ReadBlockToBuffer(raw, checkType,
+            out byte[]? buffer, out int length,
+            out long unpaddedSize, out long uncompressedSize);
+        // ReadRawBlock never returns an index indicator, so hasBlock is always true.
+        return new XzBlock.BlockBufferResult(hasBlock, buffer, length, unpaddedSize, uncompressedSize);
     }
 
     private async ValueTask<int> ReadAsyncCore(
@@ -264,6 +373,7 @@ public sealed class XzDecompressStream : Stream
                 _headerRead = true;
                 _allBlocksRead = false;
                 _streamFinalized = false;
+                _indexIndicatorSeen = false;
                 _blockRecords.Clear();
             }
 
@@ -424,6 +534,12 @@ public sealed class XzDecompressStream : Stream
                 {
                     ArrayPool<byte>.Shared.Return(_blockBuffer);
                     _blockBuffer = null;
+                }
+                while (_decodedBlocks.Count > 0)
+                {
+                    var decoded = _decodedBlocks.Dequeue();
+                    if (decoded.Buffer != null)
+                        ArrayPool<byte>.Shared.Return(decoded.Buffer);
                 }
                 if (!_leaveOpen)
                     _baseStream.Dispose();

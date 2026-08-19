@@ -57,8 +57,28 @@ public static class XzCompressor
     /// <exception cref="LzmaDataErrorException">The compressed data is corrupt.</exception>
     public static byte[] Decompress(ReadOnlySpan<byte> compressedData)
     {
-        using var input = new MemoryStream(compressedData.ToArray());
-        using var xz = new XzDecompressStream(input, leaveOpen: true);
+        return Decompress(compressedData, threads: 1);
+    }
+
+    /// <summary>
+    /// Decompresses XZ formatted data using multiple threads and returns the uncompressed bytes.
+    /// Parallelism applies per XZ block, so it only helps for multi-block streams
+    /// (e.g., produced with <see cref="XzCompressOptions.Threads"/> &gt; 1 or a small
+    /// <see cref="XzCompressOptions.BlockSize"/>). Single-block streams decode serially.
+    /// </summary>
+    /// <param name="compressedData">The XZ compressed data.</param>
+    /// <param name="threads">Number of decoder threads: 0 = all CPUs, 1 = single-threaded.</param>
+    /// <returns>A byte array containing the decompressed data.</returns>
+    /// <exception cref="LzmaFormatException">The data is not in valid XZ format.</exception>
+    /// <exception cref="LzmaDataErrorException">The compressed data is corrupt.</exception>
+    public static byte[] Decompress(ReadOnlySpan<byte> compressedData, int threads)
+    {
+        byte[] inputArray = compressedData.ToArray();
+        // publiclyVisible: true keeps TryGetBuffer working so block decoding can
+        // slice compressed data directly from this buffer instead of copying it.
+        using var input = new MemoryStream(inputArray, 0, inputArray.Length,
+            writable: false, publiclyVisible: true);
+        using var xz = new XzDecompressStream(input, threads, leaveOpen: true);
         using var output = new MemoryStream();
         xz.CopyTo(output);
         return output.ToArray();
@@ -74,7 +94,9 @@ public static class XzCompressor
     /// <exception cref="LzmaDataErrorException">The compressed data is corrupt.</exception>
     public static async Task<byte[]> DecompressAsync(ReadOnlyMemory<byte> compressedData, CancellationToken cancellationToken = default)
     {
-        var input = new MemoryStream(compressedData.ToArray());
+        byte[] inputArray = compressedData.ToArray();
+        var input = new MemoryStream(inputArray, 0, inputArray.Length,
+            writable: false, publiclyVisible: true);
         await using var xz = new XzDecompressStream(input, leaveOpen: true);
         var output = new MemoryStream();
         await xz.CopyToAsync(output, cancellationToken).ConfigureAwait(false);

@@ -59,7 +59,13 @@ internal sealed class Lzma2Encoder : IDisposable
             compressedStream.SetLength(0);
             if (_encoder == null)
             {
-                _encoder = new LzmaEncoder(_props);
+                // Each chunk is encoded independently (full dictionary reset per
+                // chunk), so the match finder never looks back further than one
+                // chunk. Cap its window at the chunk size: with an 8 MB preset
+                // dictionary this shrinks the per-chunk hash/chain table reset
+                // from ~38 MB of memset to under 1 MB.
+                _encoder = new LzmaEncoder(
+                    _props.WithDictionarySize(Math.Min(_props.DictionarySize, _chunkSize)));
             }
 
             // Both 0xE0 (first chunk) and 0xA0 (subsequent chunks) indicate
