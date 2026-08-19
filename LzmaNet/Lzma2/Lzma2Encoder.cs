@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: 0BSD
 
 using System.Buffers;
+
 using LzmaNet.Lzma;
 
 namespace LzmaNet.Lzma2;
@@ -168,9 +169,12 @@ internal sealed class Lzma2Encoder : IDisposable
         if (encoded > 40) throw new LzmaDataErrorException("Invalid LZMA2 dictionary size byte.");
 
         int logBase = 12 + encoded / 2;
-        if ((encoded & 1) == 0)
-            return 1 << logBase;
-        return (1 << logBase) + (1 << (logBase - 1));
+        long value = (encoded & 1) == 0
+            ? 1L << logBase
+            : (1L << logBase) + (1L << (logBase - 1));
+        if (value > int.MaxValue)
+            throw new LzmaDataErrorException("LZMA2 dictionary size is too large for this decoder.");
+        return (int)value;
     }
 
     public void Dispose()

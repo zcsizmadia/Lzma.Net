@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: 0BSD
 
 using System.Buffers.Binary;
+
 using LzmaNet.Check;
 
 namespace LzmaNet.Xz;
@@ -30,6 +31,9 @@ internal static class XzHeader
 
         if (flag0 != 0x00)
             throw new LzmaFormatException("Unsupported XZ stream flags.");
+
+        if ((flag1 & 0xF0) != 0)
+            throw new LzmaFormatException("Reserved XZ stream flag bits are set.");
 
         int checkType = flag1 & 0x0F;
 
@@ -84,6 +88,9 @@ internal static class XzHeader
         // Stream flags (bytes 8-9) — must match header
         if (footer[8] != 0x00)
             throw new LzmaFormatException("Unsupported XZ stream flags in footer.");
+
+        if ((footer[9] & 0xF0) != 0)
+            throw new LzmaFormatException("Reserved XZ stream footer flag bits are set.");
 
         int footerCheckType = footer[9] & 0x0F;
         if (footerCheckType != expectedCheckType)

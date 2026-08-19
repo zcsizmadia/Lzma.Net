@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: 0BSD
 
+using System.Buffers.Binary;
+
 using LzmaNet.Xz;
 
 namespace LzmaNet.Filters;
@@ -31,6 +33,19 @@ internal static class FilterFactory
     }
 
     /// <summary>
+    /// Gets the optional start offset stored in BCJ filter properties.
+    /// </summary>
+    public static uint GetStartPosition(ulong filterId, ReadOnlySpan<byte> properties)
+    {
+        if (filterId == XzConstants.FilterIdDelta || properties.Length == 0)
+            return 0;
+        if (properties.Length != 4)
+            throw new LzmaDataErrorException($"Invalid BCJ filter properties size: {properties.Length}.");
+
+        return BinaryPrimitives.ReadUInt32LittleEndian(properties);
+    }
+
+    /// <summary>
     /// Checks if a filter ID is a supported BCJ or Delta filter.
     /// </summary>
     public static bool IsSupported(ulong filterId)
@@ -56,9 +71,7 @@ internal static class FilterFactory
 
     private static T CreateWithOffset<T>(ReadOnlySpan<byte> properties) where T : IBcjFilter, new()
     {
-        // BCJ filters have 0 or 4 bytes of properties (start offset)
-        // The start offset is rarely used — we accept it but ignore it since
-        // the offset is applied via the startPos parameter during code()
+        // BCJ filters have 0 or 4 bytes of properties (start offset).
         if (properties.Length != 0 && properties.Length != 4)
             throw new LzmaDataErrorException($"Invalid BCJ filter properties size: {properties.Length}.");
         return new T();
