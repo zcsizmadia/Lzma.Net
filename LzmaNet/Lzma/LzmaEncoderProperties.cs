@@ -90,23 +90,6 @@ internal sealed class LzmaEncoderProperties
     }
 
     /// <summary>
-    /// Returns a copy of these properties with a different dictionary size.
-    /// Used to cap the match-finder window without changing header properties.
-    /// </summary>
-    public LzmaEncoderProperties WithDictionarySize(int dictionarySize)
-    {
-        return new LzmaEncoderProperties
-        {
-            Lc = Lc,
-            Lp = Lp,
-            Pb = Pb,
-            DictionarySize = dictionarySize,
-            MatchMaxLen = MatchMaxLen,
-            CutValue = CutValue,
-        };
-    }
-
-    /// <summary>
     /// Validates the properties.
     /// </summary>
     public void Validate()

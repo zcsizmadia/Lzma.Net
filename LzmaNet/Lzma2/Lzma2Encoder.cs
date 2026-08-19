@@ -39,55 +39,67 @@ internal sealed class Lzma2Encoder : IDisposable
 
     /// <summary>
     /// Encodes the input data as a complete LZMA2 stream.
+    /// The dictionary carries across chunks (like xz): the first chunk performs a
+    /// full reset (0xE0 / 0x01) and later chunks continue with control 0x80, so
+    /// matches can reference data up to a full dictionary behind the current
+    /// position instead of being limited to one 64 KB chunk.
     /// </summary>
     /// <param name="input">Uncompressed data.</param>
     /// <param name="output">Stream to write LZMA2 data to.</param>
     public void Encode(ReadOnlyMemory<byte> input, Stream output)
     {
+        var span = input.Span;
         int pos = 0;
         int remaining = input.Length;
 
         // Reuse a single MemoryStream across chunks to avoid per-chunk allocation
         using var compressedStream = new MemoryStream(_chunkSize);
 
+        _encoder ??= new LzmaEncoder(_props);
+        _encoder.ResetState();
+        _encoder.ResetDictionary();
+
+        bool firstChunk = true;      // block start: dictionary reset must be signaled
+        bool propsSent = false;      // properties byte sent in this block yet?
+        bool needStateReset = false; // required after a stored-uncompressed chunk
+
         while (remaining > 0)
         {
             int thisChunk = Math.Min(remaining, _chunkSize);
-            var chunkData = input.Slice(pos, thisChunk);
 
-            // Try LZMA compression
+            // Feed the chunk's data to the match finder; the dictionary window
+            // already contains all previous chunks of this block.
+            _encoder.Append(span.Slice(pos, thisChunk));
+
+            if (needStateReset)
+                _encoder.ResetState();
+
             compressedStream.SetLength(0);
-            if (_encoder == null)
-            {
-                // Each chunk is encoded independently (full dictionary reset per
-                // chunk), so the match finder never looks back further than one
-                // chunk. Cap its window at the chunk size: with an 8 MB preset
-                // dictionary this shrinks the per-chunk hash/chain table reset
-                // from ~38 MB of memset to under 1 MB.
-                _encoder = new LzmaEncoder(
-                    _props.WithDictionarySize(Math.Min(_props.DictionarySize, _chunkSize)));
-            }
-
-            // Both 0xE0 (first chunk) and 0xA0 (subsequent chunks) indicate
-            // state reset to the decoder, so the encoder must also reset state.
-            _encoder.ResetState();
-
-            _encoder.EncodeForLzma2(chunkData, compressedStream);
+            long written = _encoder.EncodeChunk(span, pos, thisChunk, compressedStream,
+                sizeLimit: thisChunk);
             int compressedLen = (int)compressedStream.Length;
 
-            if (compressedLen < thisChunk && compressedLen <= 65536)
+            if (written >= 0 && compressedLen < thisChunk && compressedLen <= 65536)
             {
-                // LZMA is smaller — write LZMA chunk
-                // Use full reset (0xE0) for every chunk since each is encoded independently
-                WriteLzmaChunk(output, chunkData.Span,
-                    compressedStream.GetBuffer().AsSpan(0, compressedLen));
+                // LZMA chunk. Reset bits: 3 = dict+state+props (block start),
+                // 2 = state+props, 1 = state only, 0 = continuation.
+                int resetBits = firstChunk ? 3 : needStateReset ? (propsSent ? 1 : 2) : 0;
+                WriteLzmaChunk(output, span.Slice(pos, thisChunk),
+                    compressedStream.GetBuffer().AsSpan(0, compressedLen), resetBits);
+                propsSent |= resetBits >= 2;
+                needStateReset = false;
             }
             else
             {
-                // Store uncompressed
-                WriteUncompressedChunk(output, chunkData.Span);
+                // Store uncompressed. The encoder's probability state has diverged
+                // from what the decoder sees (the LZMA output was discarded), and
+                // the LZMA2 spec requires a state reset on the next LZMA chunk
+                // after an uncompressed chunk anyway.
+                WriteUncompressedChunk(output, span.Slice(pos, thisChunk), dictReset: firstChunk);
+                needStateReset = true;
             }
 
+            firstChunk = false;
             pos += thisChunk;
             remaining -= thisChunk;
         }
@@ -97,14 +109,12 @@ internal sealed class Lzma2Encoder : IDisposable
     }
 
     private void WriteLzmaChunk(Stream output, ReadOnlySpan<byte> uncompressed,
-                                 ReadOnlySpan<byte> compressed)
+                                 ReadOnlySpan<byte> compressed, int resetBits)
     {
         int uncompSize = uncompressed.Length - 1; // stored as size-1
         int compSize = compressed.Length - 1;     // stored as size-1
 
-        // Full reset: dictionary + state + new properties (0xE0)
-        // Each chunk is encoded independently with a fresh encoder state.
-        byte control = (byte)(0xE0 | ((uncompSize >> 16) & 0x1F));
+        byte control = (byte)(0x80 | (resetBits << 5) | ((uncompSize >> 16) & 0x1F));
 
         output.WriteByte(control);
 
@@ -116,14 +126,15 @@ internal sealed class Lzma2Encoder : IDisposable
         output.WriteByte((byte)(compSize >> 8));
         output.WriteByte((byte)compSize);
 
-        // Properties byte
-        output.WriteByte(_props.PropertiesByte);
+        // Properties byte only when the control announces new properties
+        if (resetBits >= 2)
+            output.WriteByte(_props.PropertiesByte);
 
         // Compressed data
         output.Write(compressed);
     }
 
-    private void WriteUncompressedChunk(Stream output, ReadOnlySpan<byte> data)
+    private static void WriteUncompressedChunk(Stream output, ReadOnlySpan<byte> data, bool dictReset)
     {
         // Write in segments of up to 64KB (LZMA2 uncompressed chunk limit)
         int pos = 0;
@@ -132,8 +143,9 @@ internal sealed class Lzma2Encoder : IDisposable
             int segSize = Math.Min(data.Length - pos, 0x10000); // 64KB max per uncompressed chunk
             int sizeVal = segSize - 1; // stored as size-1
 
-            // Control byte: 0x01 for dict reset (each chunk is independent)
-            output.WriteByte((byte)(pos == 0 ? 0x01 : 0x02));
+            // Control byte: 0x01 resets the dictionary (block start only);
+            // 0x02 continues the dictionary.
+            output.WriteByte((byte)(dictReset && pos == 0 ? 0x01 : 0x02));
 
             // Data size (16 bits)
             output.WriteByte((byte)(sizeVal >> 8));
