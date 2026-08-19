@@ -176,11 +176,14 @@ if (xzPath != null)
     {
         string tmpCompressed = tmpInput + ".xz";
 
-        // Compress
+        // Compress. Match LzmaNet's MT block layout: without an explicit block
+        // size, xz -T uses 3x-dictionary blocks (24 MiB at preset 6), so 16 MB
+        // of input stays a single block and gets no parallelism at all.
+        string blockSizeArg = threads > 1 ? "--block-size=1MiB " : "";
         if (File.Exists(tmpCompressed)) File.Delete(tmpCompressed);
         var sw = Stopwatch.StartNew();
         var pCompress = Process.Start(new ProcessStartInfo(xzPath,
-            $"-{Preset} -T {threads} -k \"{tmpInput}\"")
+            $"-{Preset} -T {threads} {blockSizeArg}-k \"{tmpInput}\"")
         {
             UseShellExecute = false,
             CreateNoWindow = true,
