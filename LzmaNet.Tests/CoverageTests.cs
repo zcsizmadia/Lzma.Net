@@ -76,9 +76,9 @@ public class CoverageTests
     public async Task RangeDecoder_Init_InvalidFirstByte_Throws()
     {
         byte[] data = [0xFF, 0x00, 0x00, 0x00, 0x00]; // First byte must be 0x00
-        var rc = new RangeDecoder();
         await Assert.That(() =>
         {
+            var rc = new RangeDecoder();
             rc.Init(data.AsMemory(), 0);
         }).ThrowsExactly<LzmaDataErrorException>();
     }
@@ -87,10 +87,10 @@ public class CoverageTests
     public async Task RangeDecoder_SpanInit_InvalidFirstByte_Throws()
     {
         byte[] data = [0xFF, 0x00, 0x00, 0x00, 0x00];
-        var rc = new RangeDecoder();
-        int offset = 0;
         await Assert.That(() =>
         {
+            var rc = new RangeDecoder();
+            int offset = 0;
             rc.Init(data.AsSpan(), ref offset);
         }).ThrowsExactly<LzmaDataErrorException>();
     }
@@ -99,10 +99,12 @@ public class CoverageTests
     public async Task RangeDecoder_SpanInit_And_SetBuffer()
     {
         byte[] data = [0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00];
-        var rc = new RangeDecoder();
+
+        // RangeDecoder is a ref struct, so keep all decoder usage before awaits.
         int offset = 0;
+        var rc = new RangeDecoder();
         rc.Init(data.AsSpan(), ref offset);
-        await Assert.That(offset).IsEqualTo(5);
+        int offsetAfterInit = offset;
 
         // SetBuffer for continued decoding
         rc.SetBuffer(data.AsMemory(), offset);
@@ -110,6 +112,8 @@ public class CoverageTests
         // Should be able to decode a bit without crashing
         ushort prob = (ushort)(RangeDecoder.kBitModelTotal >> 1);
         rc.DecodeBit(ref prob); // exercises Normalize which reads from buffer
+
+        await Assert.That(offsetAfterInit).IsEqualTo(5);
     }
 
     [Test]
@@ -146,6 +150,8 @@ public class CoverageTests
         var enc = new RangeEncoder(ms);
         enc.WriteInitByte();
         await Assert.That(enc.BytesWritten).IsEqualTo(1L);
+        // Output is buffered internally; Reset flushes pending bytes to the stream.
+        enc.Reset();
         await Assert.That(ms.ToArray()[0]).IsEqualTo((byte)0x00);
     }
 
@@ -255,10 +261,9 @@ public class CoverageTests
         byte[] compressed = compressedStream.ToArray();
 
         var decoder = new LzmaDecoder(props.Lc, props.Lp, props.Pb);
-        using var window = new OutputWindow(props.DictionarySize);
         byte[] output = new byte[original.Length];
         int outPos = 0;
-        decoder.Decode(compressed.AsMemory(), 0, window, output, ref outPos, original.Length);
+        decoder.Decode(compressed.AsMemory(), 0, output, ref outPos, original.Length);
 
         await Assert.That(outPos).IsEqualTo(original.Length);
         await Assert.That(output.SequenceEqual(original)).IsTrue();
@@ -589,10 +594,9 @@ public class CoverageTests
         byte[] compressed = compressedStream.ToArray();
 
         var decoder = new LzmaDecoder(props.Lc, props.Lp, props.Pb);
-        using var window = new OutputWindow(props.DictionarySize);
         byte[] output = new byte[original.Length];
         int outPos = 0;
-        decoder.Decode(compressed.AsMemory(), 0, window, output, ref outPos, original.Length);
+        decoder.Decode(compressed.AsMemory(), 0, output, ref outPos, original.Length);
 
         await Assert.That(outPos).IsEqualTo(original.Length);
         await Assert.That(output.SequenceEqual(original)).IsTrue();
@@ -620,10 +624,9 @@ public class CoverageTests
         byte[] compressed = compressedStream.ToArray();
 
         var decoder = new LzmaDecoder(props.Lc, props.Lp, props.Pb);
-        using var window = new OutputWindow(props.DictionarySize);
         byte[] output = new byte[original.Length];
         int outPos = 0;
-        decoder.Decode(compressed.AsMemory(), 0, window, output, ref outPos, original.Length);
+        decoder.Decode(compressed.AsMemory(), 0, output, ref outPos, original.Length);
 
         await Assert.That(outPos).IsEqualTo(original.Length);
         await Assert.That(output.SequenceEqual(original)).IsTrue();
@@ -854,16 +857,35 @@ public class CoverageTests
     }
 
     [Test]
-    public Task XzBlock_ReadBlock_NonZeroPaddingAfterData_Throws()
+    public async Task XzBlock_ReadBlock_NonZeroPaddingAfterData_Throws()
     {
-        byte[] data = "Pad test"u8.ToArray();
         var props = LzmaEncoderProperties.FromPreset(0);
-
-        using var blockStream = new MemoryStream();
         using var lzma2Encoder = new Lzma2Encoder(props);
-        XzBlock.WriteBlock(blockStream, data.AsMemory(), lzma2Encoder, XzConstants.CheckCrc64);
-        byte[] blockBytes = blockStream.ToArray();
-        return Task.CompletedTask;
+        byte[]? blockBytes = null;
+        int paddingOffset = 0;
+
+        for (int length = 1; length <= 32; length++)
+        {
+            using var blockStream = new MemoryStream();
+            XzBlock.WriteBlock(blockStream, new byte[length], lzma2Encoder, XzConstants.CheckCrc64);
+            byte[] candidate = blockStream.ToArray();
+            int headerSize = (candidate[0] + 1) * 4;
+            int pos = 2;
+            int compressedSize = checked((int)ReadVli(candidate, ref pos));
+            if ((compressedSize & 3) == 0)
+                continue;
+
+            blockBytes = candidate;
+            paddingOffset = headerSize + compressedSize;
+            break;
+        }
+
+        await Assert.That(blockBytes).IsNotNull();
+        blockBytes![paddingOffset] = 0xFF;
+        using var input = new MemoryStream(blockBytes);
+        await Assert.That(() => XzBlock.ReadBlock(
+            input, XzConstants.CheckCrc64, Stream.Null, out _, out _))
+            .ThrowsExactly<LzmaDataErrorException>();
     }
 
     // ── Helper: build XZ block headers for error testing ─────────────
@@ -924,6 +946,20 @@ public class CoverageTests
             value >>= 7;
         }
         output.WriteByte((byte)value);
+    }
+
+    private static ulong ReadVli(ReadOnlySpan<byte> input, ref int position)
+    {
+        ulong value = 0;
+        int shift = 0;
+        while (true)
+        {
+            byte current = input[position++];
+            value |= (ulong)(current & 0x7F) << shift;
+            if ((current & 0x80) == 0)
+                return value;
+            shift += 7;
+        }
     }
 
     // ── XzConstants: remaining GetCheckSize branches ─────────────────
@@ -1044,119 +1080,6 @@ public class CoverageTests
     {
         var props = new LzmaEncoderProperties { DictionarySize = 0 };
         await Assert.That(() => props.Validate()).ThrowsExactly<ArgumentOutOfRangeException>();
-    }
-
-    // ── OutputWindow: direct exercise ────────────────────────────────
-
-    [Test]
-    public async Task OutputWindow_PutByte_GetByte()
-    {
-        using var window = new OutputWindow(256);
-        window.PutByte(0xAA);
-        window.PutByte(0xBB);
-        window.PutByte(0xCC);
-
-        await Assert.That(window.GetByte(0)).IsEqualTo((byte)0xCC);
-        await Assert.That(window.GetByte(1)).IsEqualTo((byte)0xBB);
-        await Assert.That(window.GetByte(2)).IsEqualTo((byte)0xAA);
-        await Assert.That(window.TotalPos).IsEqualTo(3L);
-    }
-
-    [Test]
-    public async Task OutputWindow_CopyMatch_Overlapping()
-    {
-        // RLE: distance=0 means copy previous byte repeatedly
-        using var window = new OutputWindow(256);
-        byte[] output = new byte[20];
-        int outPos = 0;
-
-        window.PutByte(0x42);
-        output[outPos++] = 0x42;
-
-        window.CopyMatch(0, 10, output, ref outPos);
-        await Assert.That(outPos).IsEqualTo(11);
-        for (int i = 0; i < 11; i++)
-            await Assert.That(output[i]).IsEqualTo((byte)0x42);
-    }
-
-    [Test]
-    public async Task OutputWindow_CopyMatch_NonOverlapping()
-    {
-        using var window = new OutputWindow(256);
-        byte[] output = new byte[20];
-        int outPos = 0;
-
-        // Write pattern
-        for (byte b = 0; b < 5; b++)
-        {
-            window.PutByte(b);
-            output[outPos++] = b;
-        }
-
-        // Copy 5 bytes at distance=4 (copy entire pattern)
-        window.CopyMatch(4, 5, output, ref outPos);
-        await Assert.That(outPos).IsEqualTo(10);
-        for (int i = 0; i < 5; i++)
-            await Assert.That(output[i + 5]).IsEqualTo((byte)i);
-    }
-
-    [Test]
-    public async Task OutputWindow_CopyUncompressed()
-    {
-        using var window = new OutputWindow(256);
-        byte[] data = [1, 2, 3, 4, 5];
-        byte[] output = new byte[20];
-        int outPos = 0;
-
-        window.CopyUncompressed(data, output, ref outPos);
-        await Assert.That(outPos).IsEqualTo(5);
-        await Assert.That(output.AsSpan(0, 5).SequenceEqual(data)).IsTrue();
-        await Assert.That(window.TotalPos).IsEqualTo(5L);
-    }
-
-    [Test]
-    public async Task OutputWindow_CopyUncompressed_WrapAround()
-    {
-        // Small dict to force wrapping
-        using var window = new OutputWindow(8);
-        byte[] data = new byte[20];
-        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i + 1);
-        byte[] output = new byte[20];
-        int outPos = 0;
-
-        window.CopyUncompressed(data, output, ref outPos);
-        await Assert.That(outPos).IsEqualTo(20);
-        await Assert.That(output.SequenceEqual(data)).IsTrue();
-    }
-
-    [Test]
-    public async Task OutputWindow_HasDistance()
-    {
-        using var window = new OutputWindow(256);
-        await Assert.That(window.HasDistance(0)).IsFalse();
-        window.PutByte(0x00);
-        await Assert.That(window.HasDistance(0)).IsTrue();
-        await Assert.That(window.HasDistance(1)).IsFalse();
-    }
-
-    [Test]
-    public async Task OutputWindow_Reset()
-    {
-        using var window = new OutputWindow(256);
-        window.PutByte(0x42);
-        await Assert.That(window.TotalPos).IsEqualTo(1L);
-        window.Reset();
-        await Assert.That(window.TotalPos).IsEqualTo(0L);
-        await Assert.That(window.Pos).IsEqualTo(0);
-    }
-
-    [Test]
-    public Task OutputWindow_DoubleDispose()
-    {
-        var window = new OutputWindow(256);
-        window.Dispose();
-        window.Dispose(); // Should not throw
-        return Task.CompletedTask;
     }
 
     // ── Concatenated XZ streams ──────────────────────────────────────
