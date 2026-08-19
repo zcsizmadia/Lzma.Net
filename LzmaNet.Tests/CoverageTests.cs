@@ -854,16 +854,35 @@ public class CoverageTests
     }
 
     [Test]
-    public Task XzBlock_ReadBlock_NonZeroPaddingAfterData_Throws()
+    public async Task XzBlock_ReadBlock_NonZeroPaddingAfterData_Throws()
     {
-        byte[] data = "Pad test"u8.ToArray();
         var props = LzmaEncoderProperties.FromPreset(0);
-
-        using var blockStream = new MemoryStream();
         using var lzma2Encoder = new Lzma2Encoder(props);
-        XzBlock.WriteBlock(blockStream, data.AsMemory(), lzma2Encoder, XzConstants.CheckCrc64);
-        byte[] blockBytes = blockStream.ToArray();
-        return Task.CompletedTask;
+        byte[]? blockBytes = null;
+        int paddingOffset = 0;
+
+        for (int length = 1; length <= 32; length++)
+        {
+            using var blockStream = new MemoryStream();
+            XzBlock.WriteBlock(blockStream, new byte[length], lzma2Encoder, XzConstants.CheckCrc64);
+            byte[] candidate = blockStream.ToArray();
+            int headerSize = (candidate[0] + 1) * 4;
+            int pos = 2;
+            int compressedSize = checked((int)ReadVli(candidate, ref pos));
+            if ((compressedSize & 3) == 0)
+                continue;
+
+            blockBytes = candidate;
+            paddingOffset = headerSize + compressedSize;
+            break;
+        }
+
+        await Assert.That(blockBytes).IsNotNull();
+        blockBytes![paddingOffset] = 0xFF;
+        using var input = new MemoryStream(blockBytes);
+        await Assert.That(() => XzBlock.ReadBlock(
+            input, XzConstants.CheckCrc64, Stream.Null, out _, out _))
+            .ThrowsExactly<LzmaDataErrorException>();
     }
 
     // ── Helper: build XZ block headers for error testing ─────────────
@@ -924,6 +943,20 @@ public class CoverageTests
             value >>= 7;
         }
         output.WriteByte((byte)value);
+    }
+
+    private static ulong ReadVli(ReadOnlySpan<byte> input, ref int position)
+    {
+        ulong value = 0;
+        int shift = 0;
+        while (true)
+        {
+            byte current = input[position++];
+            value |= (ulong)(current & 0x7F) << shift;
+            if ((current & 0x80) == 0)
+                return value;
+            shift += 7;
+        }
     }
 
     // ── XzConstants: remaining GetCheckSize branches ─────────────────

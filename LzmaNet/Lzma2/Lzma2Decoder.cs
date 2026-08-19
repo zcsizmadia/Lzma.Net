@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: 0BSD
 
 using System.Buffers;
+
 using LzmaNet.Lzma;
 using LzmaNet.RangeCoder;
 
@@ -52,6 +53,7 @@ internal sealed class Lzma2Decoder : IDisposable
         var span = input.Span;
         int inPos = 0;
         int outPos = 0;
+        bool sawEndMarker = false;
 
         while (inPos < span.Length)
         {
@@ -60,6 +62,7 @@ internal sealed class Lzma2Decoder : IDisposable
             if (control == 0x00)
             {
                 // End of LZMA2 data
+                sawEndMarker = true;
                 break;
             }
 
@@ -73,9 +76,12 @@ internal sealed class Lzma2Decoder : IDisposable
                     _needProperties = true;
                 }
 
+                EnsureAvailable(span, inPos, 2, "Truncated LZMA2 chunk header.");
                 int dataSize = ((span[inPos] << 8) | span[inPos + 1]) + 1;
                 inPos += 2;
 
+                EnsureAvailable(span, inPos, dataSize, "Truncated LZMA2 uncompressed chunk.");
+                EnsureOutputAvailable(output, outPos, dataSize);
                 var uncompData = span.Slice(inPos, dataSize);
                 _window.CopyUncompressed(uncompData, output, ref outPos);
                 inPos += dataSize;
@@ -91,6 +97,7 @@ internal sealed class Lzma2Decoder : IDisposable
             bool newProps = control >= 0xC0;
 
             // Parse sizes
+            EnsureAvailable(span, inPos, 4, "Truncated LZMA2 chunk header.");
             int uncompSize = ((control & 0x1F) << 16) | (span[inPos] << 8) | span[inPos + 1];
             uncompSize++;
             inPos += 2;
@@ -101,6 +108,7 @@ internal sealed class Lzma2Decoder : IDisposable
 
             if (newProps)
             {
+                EnsureAvailable(span, inPos, 1, "Truncated LZMA2 properties.");
                 byte propsByte = span[inPos++];
                 if (!LzmaConstants.DecodeProperties(propsByte, out _lc, out _lp, out _pb))
                     throw new LzmaDataErrorException("Invalid LZMA properties.");
@@ -126,6 +134,8 @@ internal sealed class Lzma2Decoder : IDisposable
                 _lzmaDecoder.ResetState();
 
             // Decode LZMA chunk
+            EnsureAvailable(span, inPos, compSize, "Truncated LZMA2 compressed chunk.");
+            EnsureOutputAvailable(output, outPos, uncompSize);
             var chunkInput = input.Slice(inPos, compSize);
             var rc = new RangeDecoder();
             rc.Init(chunkInput, 0);
@@ -134,8 +144,23 @@ internal sealed class Lzma2Decoder : IDisposable
             inPos += compSize;
         }
 
+        if (!sawEndMarker)
+            throw new LzmaDataErrorException("LZMA2 end marker is missing.");
+
         consumed = inPos;
         return outPos;
+    }
+
+    private static void EnsureAvailable(ReadOnlySpan<byte> input, int position, int count, string message)
+    {
+        if ((uint)position > (uint)input.Length || count < 0 || count > input.Length - position)
+            throw new LzmaDataErrorException(message);
+    }
+
+    private static void EnsureOutputAvailable(Span<byte> output, int position, int count)
+    {
+        if ((uint)position > (uint)output.Length || count < 0 || count > output.Length - position)
+            throw new LzmaDataErrorException("Output buffer is too small for the LZMA2 data.");
     }
 
     public void Dispose()

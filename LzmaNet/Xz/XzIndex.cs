@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: 0BSD
 
 using System.Buffers.Binary;
+
 using LzmaNet.Check;
 
 namespace LzmaNet.Xz;
@@ -19,12 +20,12 @@ internal static class XzIndex
     /// <returns>Size of the index in bytes (including the indicator byte).</returns>
     public static long ReadIndex(Stream stream, out List<(long unpaddedSize, long uncompressedSize)> records)
     {
-        long startPos = stream.Position - 1; // -1 for the 0x00 indicator already read
-
         using var indexData = new MemoryStream();
         indexData.WriteByte(0x00);
 
         ulong numRecords = ReadMultibyteIntAndCopy(stream, indexData);
+        if (numRecords > int.MaxValue)
+            throw new LzmaDataErrorException("Too many records in XZ index.");
 
         records = new List<(long, long)>((int)Math.Min(numRecords, 1024));
         for (ulong i = 0; i < numRecords; i++)
@@ -51,10 +52,52 @@ internal static class XzIndex
         ReadExact(stream, crcBuf);
 
         // Verify CRC32
-        if (!Crc32.Verify(indexData.ToArray().AsSpan(), crcBuf))
+        if (!Crc32.Verify(indexData.GetBuffer().AsSpan(0, (int)indexData.Length), crcBuf))
             throw new LzmaDataErrorException("XZ index CRC32 mismatch.");
 
-        return stream.Position - startPos;
+        return indexData.Length + crcBuf.Length;
+    }
+
+    /// <summary>
+    /// Asynchronously reads and validates the XZ index from the stream.
+    /// </summary>
+    public static async Task<(long Size, List<(long unpaddedSize, long uncompressedSize)> Records)>
+        ReadIndexAsync(Stream stream, CancellationToken cancellationToken = default)
+    {
+        using var indexData = new MemoryStream();
+        indexData.WriteByte(0x00);
+
+        ulong numRecords = await ReadMultibyteIntAndCopyAsync(stream, indexData, cancellationToken)
+            .ConfigureAwait(false);
+        if (numRecords > int.MaxValue)
+            throw new LzmaDataErrorException("Too many records in XZ index.");
+
+        var records = new List<(long, long)>((int)Math.Min(numRecords, 1024));
+        for (ulong i = 0; i < numRecords; i++)
+        {
+            long unpaddedSize = (long)await ReadMultibyteIntAndCopyAsync(
+                stream, indexData, cancellationToken).ConfigureAwait(false);
+            long uncompressedSize = (long)await ReadMultibyteIntAndCopyAsync(
+                stream, indexData, cancellationToken).ConfigureAwait(false);
+            records.Add((unpaddedSize, uncompressedSize));
+        }
+
+        int paddingSize = (4 - (int)(indexData.Length & 3)) & 3;
+        byte[] oneByte = new byte[1];
+        for (int i = 0; i < paddingSize; i++)
+        {
+            await ReadExactAsync(stream, oneByte, cancellationToken).ConfigureAwait(false);
+            if (oneByte[0] != 0)
+                throw new LzmaDataErrorException("Non-zero padding in XZ index.");
+            indexData.WriteByte(0);
+        }
+
+        byte[] crc = new byte[4];
+        await ReadExactAsync(stream, crc, cancellationToken).ConfigureAwait(false);
+        if (!Crc32.Verify(indexData.GetBuffer().AsSpan(0, (int)indexData.Length), crc))
+            throw new LzmaDataErrorException("XZ index CRC32 mismatch.");
+
+        return (indexData.Length + crc.Length, records);
     }
 
     /// <summary>
@@ -65,8 +108,6 @@ internal static class XzIndex
     /// <returns>Total size of the index (including indicator, padding, CRC32).</returns>
     public static long WriteIndex(Stream output, IReadOnlyList<(long unpaddedSize, long uncompressedSize)> records)
     {
-        long startPos = output.Position;
-
         using var indexData = new MemoryStream();
 
         // Index indicator
@@ -90,15 +131,16 @@ internal static class XzIndex
             indexData.WriteByte(0);
 
         // Write index data
-        byte[] indexBytes = indexData.ToArray();
+        int indexLength = (int)indexData.Length;
+        ReadOnlySpan<byte> indexBytes = indexData.GetBuffer().AsSpan(0, indexLength);
         output.Write(indexBytes);
 
         // CRC32
         Span<byte> crc = stackalloc byte[4];
-        Crc32.WriteLE(indexBytes.AsSpan(), crc);
+        Crc32.WriteLE(indexBytes, crc);
         output.Write(crc);
 
-        return output.Position - startPos;
+        return indexLength + crc.Length;
     }
 
     /// <summary>
@@ -112,8 +154,6 @@ internal static class XzIndex
         IReadOnlyList<(long unpaddedSize, long uncompressedSize)> records,
         CancellationToken cancellationToken = default)
     {
-        long startPos = output.Position;
-
         using var indexData = new MemoryStream();
 
         // Index indicator
@@ -137,33 +177,60 @@ internal static class XzIndex
             indexData.WriteByte(0);
 
         // Write index data async
-        byte[] indexBytes = indexData.ToArray();
+        int indexLength = (int)indexData.Length;
+        ReadOnlyMemory<byte> indexBytes = indexData.GetBuffer().AsMemory(0, indexLength);
         await output.WriteAsync(indexBytes, cancellationToken).ConfigureAwait(false);
 
         // CRC32
         byte[] crc = new byte[4];
-        Crc32.WriteLE(indexBytes.AsSpan(), crc);
+        Crc32.WriteLE(indexBytes.Span, crc);
         await output.WriteAsync(crc, cancellationToken).ConfigureAwait(false);
 
-        return output.Position - startPos;
+        return indexLength + crc.Length;
     }
 
     private static ulong ReadMultibyteIntAndCopy(Stream stream, MemoryStream copy)
     {
         ulong result = 0;
         int shift = 0;
-        while (true)
+        for (int byteIndex = 0; byteIndex < 9; byteIndex++)
         {
             int b = stream.ReadByte();
             if (b < 0) throw new LzmaDataErrorException("Unexpected end of XZ index.");
             copy.WriteByte((byte)b);
             result |= (ulong)(b & 0x7F) << shift;
             if ((b & 0x80) == 0)
+            {
+                if (byteIndex > 0 && (b & 0x7F) == 0)
+                    throw new LzmaDataErrorException("Non-canonical multibyte integer in XZ index.");
                 return result;
+            }
             shift += 7;
-            if (shift > 63)
-                throw new LzmaDataErrorException("Multibyte integer overflow in XZ index.");
         }
+        throw new LzmaDataErrorException("Multibyte integer overflow in XZ index.");
+    }
+
+    private static async ValueTask<ulong> ReadMultibyteIntAndCopyAsync(
+        Stream stream, MemoryStream copy, CancellationToken cancellationToken)
+    {
+        byte[] oneByte = new byte[1];
+        ulong result = 0;
+        int shift = 0;
+        for (int byteIndex = 0; byteIndex < 9; byteIndex++)
+        {
+            await ReadExactAsync(stream, oneByte, cancellationToken).ConfigureAwait(false);
+            byte b = oneByte[0];
+            copy.WriteByte(b);
+            result |= (ulong)(b & 0x7F) << shift;
+            if ((b & 0x80) == 0)
+            {
+                if (byteIndex > 0 && (b & 0x7F) == 0)
+                    throw new LzmaDataErrorException("Non-canonical multibyte integer in XZ index.");
+                return result;
+            }
+            shift += 7;
+        }
+        throw new LzmaDataErrorException("Multibyte integer overflow in XZ index.");
     }
 
     private static void WriteMultibyteInt(Stream output, ulong value)
@@ -182,6 +249,19 @@ internal static class XzIndex
         while (offset < buffer.Length)
         {
             int read = stream.Read(buffer[offset..]);
+            if (read == 0)
+                throw new LzmaDataErrorException("Unexpected end of stream.");
+            offset += read;
+        }
+    }
+
+    private static async ValueTask ReadExactAsync(
+        Stream stream, Memory<byte> buffer, CancellationToken cancellationToken)
+    {
+        int offset = 0;
+        while (offset < buffer.Length)
+        {
+            int read = await stream.ReadAsync(buffer[offset..], cancellationToken).ConfigureAwait(false);
             if (read == 0)
                 throw new LzmaDataErrorException("Unexpected end of stream.");
             offset += read;

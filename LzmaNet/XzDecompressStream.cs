@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: 0BSD
 
 using System.Buffers;
+
 using LzmaNet.Xz;
 
 namespace LzmaNet;
@@ -73,19 +74,17 @@ public sealed class XzDecompressStream : Stream
     }
 
     /// <inheritdoc/>
-    public override Task<int> ReadAsync(byte[] buffer, int offset, int count,
+    public override async Task<int> ReadAsync(byte[] buffer, int offset, int count,
         CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(Read(buffer.AsSpan(offset, count)));
+        return await ReadAsync(buffer.AsMemory(offset, count), cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc/>
     public override ValueTask<int> ReadAsync(Memory<byte> buffer,
         CancellationToken cancellationToken = default)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        return new ValueTask<int>(Read(buffer.Span));
+        return ReadAsyncCore(buffer, cancellationToken);
     }
 
     /// <inheritdoc/>
@@ -182,10 +181,10 @@ public sealed class XzDecompressStream : Stream
                 continue;
             }
 
-            // Decompress next block into a buffer
-            using var blockOutput = new MemoryStream();
-            if (!XzBlock.ReadBlock(_baseStream, _checkType, blockOutput,
-                                    out long unpaddedSize, out long uncompressedSize))
+            // Decompress next block directly into a pooled buffer.
+            if (!XzBlock.ReadBlockToBuffer(_baseStream, _checkType,
+                                           out byte[]? blockBuffer, out int blockLength,
+                                           out long unpaddedSize, out long uncompressedSize))
             {
                 _allBlocksRead = true;
                 continue;
@@ -193,14 +192,121 @@ public sealed class XzDecompressStream : Stream
 
             _blockRecords.Add((unpaddedSize, uncompressedSize));
 
-            int len = (int)blockOutput.Length;
-            if (len > 0)
+            if (blockLength > 0)
             {
-                _blockBuffer = ArrayPool<byte>.Shared.Rent(len);
-                _blockBufferLen = len;
+                _blockBuffer = blockBuffer;
+                _blockBufferLen = blockLength;
                 _blockBufferPos = 0;
-                blockOutput.Position = 0;
-                blockOutput.Read(_blockBuffer, 0, len);
+            }
+            else if (blockBuffer != null)
+            {
+                ArrayPool<byte>.Shared.Return(blockBuffer);
+            }
+        }
+
+        return totalCopied;
+    }
+
+    private async ValueTask<int> ReadAsyncCore(
+        Memory<byte> buffer, CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (_allStreamsRead)
+            return 0;
+
+        byte[]? headerBuffer = null;
+        byte[]? footerBuffer = null;
+        int totalCopied = 0;
+
+        while (totalCopied < buffer.Length)
+        {
+            if (_blockBuffer != null && _blockBufferPos < _blockBufferLen)
+            {
+                int toCopy = Math.Min(buffer.Length - totalCopied,
+                    _blockBufferLen - _blockBufferPos);
+                _blockBuffer.AsMemory(_blockBufferPos, toCopy)
+                    .CopyTo(buffer[totalCopied..]);
+                _blockBufferPos += toCopy;
+                totalCopied += toCopy;
+
+                if (_blockBufferPos >= _blockBufferLen)
+                {
+                    ArrayPool<byte>.Shared.Return(_blockBuffer);
+                    _blockBuffer = null;
+                }
+                continue;
+            }
+
+            if (!_headerRead)
+            {
+                if (_isFirstStream)
+                {
+                    headerBuffer ??= new byte[XzConstants.StreamHeaderSize];
+                    await ReadExactAsync(_baseStream, headerBuffer, cancellationToken)
+                        .ConfigureAwait(false);
+                    _checkType = XzHeader.ReadStreamHeader(headerBuffer);
+                    _isFirstStream = false;
+                }
+                else
+                {
+                    headerBuffer ??= new byte[XzConstants.StreamHeaderSize];
+                    if (!await TryReadStreamHeaderAsync(headerBuffer, cancellationToken)
+                            .ConfigureAwait(false))
+                    {
+                        _allStreamsRead = true;
+                        break;
+                    }
+                    _checkType = XzHeader.ReadStreamHeader(headerBuffer);
+                }
+
+                _headerRead = true;
+                _allBlocksRead = false;
+                _streamFinalized = false;
+                _blockRecords.Clear();
+            }
+
+            if (_allBlocksRead)
+            {
+                if (!_streamFinalized)
+                {
+                    var (indexSize, indexRecords) = await XzIndex.ReadIndexAsync(
+                        _baseStream, cancellationToken).ConfigureAwait(false);
+                    ValidateIndexRecords(indexRecords);
+
+                    footerBuffer ??= new byte[XzConstants.StreamFooterSize];
+                    await ReadExactAsync(_baseStream, footerBuffer, cancellationToken)
+                        .ConfigureAwait(false);
+                    long backwardSize = XzHeader.ReadStreamFooter(footerBuffer, _checkType);
+                    if (backwardSize != indexSize)
+                        throw new LzmaDataErrorException(
+                            $"XZ stream footer backward size ({backwardSize}) does not match index size ({indexSize}).");
+
+                    _streamFinalized = true;
+                    _headerRead = false;
+                }
+                continue;
+            }
+
+            XzBlock.BlockBufferResult block = await XzBlock.ReadBlockToBufferAsync(
+                _baseStream, _checkType, cancellationToken).ConfigureAwait(false);
+            if (!block.HasBlock)
+            {
+                _allBlocksRead = true;
+                continue;
+            }
+
+            _blockRecords.Add((block.UnpaddedSize, block.UncompressedSize));
+            if (block.Length > 0)
+            {
+                _blockBuffer = block.Buffer;
+                _blockBufferLen = block.Length;
+                _blockBufferPos = 0;
+            }
+            else if (block.Buffer != null)
+            {
+                ArrayPool<byte>.Shared.Return(block.Buffer);
             }
         }
 
@@ -246,6 +352,55 @@ public sealed class XzDecompressStream : Stream
         return true;
     }
 
+    private async ValueTask<bool> TryReadStreamHeaderAsync(
+        Memory<byte> header, CancellationToken cancellationToken)
+    {
+        byte[] oneByte = new byte[1];
+        int paddingCount = 0;
+        while (true)
+        {
+            int read = await _baseStream.ReadAsync(oneByte, cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                if (paddingCount > 0 && (paddingCount & 3) != 0)
+                    throw new LzmaDataErrorException(
+                        "XZ stream padding is not a multiple of 4 bytes.");
+                return false;
+            }
+
+            if (oneByte[0] == 0)
+            {
+                paddingCount++;
+                continue;
+            }
+
+            if (paddingCount > 0 && (paddingCount & 3) != 0)
+                throw new LzmaDataErrorException(
+                    "XZ stream padding is not a multiple of 4 bytes.");
+
+            header.Span[0] = oneByte[0];
+            await ReadExactAsync(_baseStream, header[1..], cancellationToken)
+                .ConfigureAwait(false);
+            return true;
+        }
+    }
+
+    private void ValidateIndexRecords(
+        IReadOnlyList<(long unpaddedSize, long uncompressedSize)> indexRecords)
+    {
+        if (indexRecords.Count != _blockRecords.Count)
+            throw new LzmaDataErrorException(
+                $"XZ index record count ({indexRecords.Count}) does not match block count ({_blockRecords.Count}).");
+
+        for (int i = 0; i < indexRecords.Count; i++)
+        {
+            if (indexRecords[i].unpaddedSize != _blockRecords[i].unpaddedSize)
+                throw new LzmaDataErrorException($"XZ index unpadded size mismatch at block {i}.");
+            if (indexRecords[i].uncompressedSize != _blockRecords[i].uncompressedSize)
+                throw new LzmaDataErrorException($"XZ index uncompressed size mismatch at block {i}.");
+        }
+    }
+
     /// <inheritdoc/>
     public override void Flush() { }
 
@@ -284,6 +439,19 @@ public sealed class XzDecompressStream : Stream
         while (offset < buffer.Length)
         {
             int read = stream.Read(buffer[offset..]);
+            if (read == 0)
+                throw new LzmaDataErrorException("Unexpected end of XZ stream.");
+            offset += read;
+        }
+    }
+
+    private static async ValueTask ReadExactAsync(
+        Stream stream, Memory<byte> buffer, CancellationToken cancellationToken)
+    {
+        int offset = 0;
+        while (offset < buffer.Length)
+        {
+            int read = await stream.ReadAsync(buffer[offset..], cancellationToken).ConfigureAwait(false);
             if (read == 0)
                 throw new LzmaDataErrorException("Unexpected end of XZ stream.");
             offset += read;
