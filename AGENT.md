@@ -66,7 +66,9 @@ This is a core design principle. Always prefer:
 - Hot-loop state (range, code, LZMA state, rep distances) is hoisted into locals and written back once per chunk — keep it that way
 - Probability arrays are accessed via `MemoryMarshal.GetArrayDataReference` + `Unsafe.Add` to skip bounds checks; the index invariants are established by array construction — don't change sizes without checking indices
 - CRC32/CRC64 use slicing-by-8; the match finder uses power-of-two masked chain slots and 8-byte word compares
-- The `Lzma2Encoder` caps the match-finder window at the chunk size (chunks are independent) — per-chunk table resets must stay small
+- The `Lzma2Encoder` carries the dictionary ACROSS chunks within a block (first chunk 0xE0, continuation chunks 0x80, state reset 0xA0/0xC0 after stored-uncompressed chunks). `LzmaEncoder.ResetState()` and `ResetDictionary()` are separate on purpose — dictionary resets happen once per XZ block, state resets whenever LZMA2 requires them
+- The match finder's window is the full dictionary; its buffer slides by multiples of the power-of-two cyclic size and rebases the hash/chain tables so slot mapping stays valid — don't change the slide granularity without revisiting that invariant
+- `LzmaEncoder.EncodeChunk` aborts (returns -1) when a chunk is expanding; the caller stores it uncompressed and must reset state before the next chunk (LZMA2 requires this anyway)
 
 ### Testing
 - **TUnit** — the test project requires `<OutputType>Exe</OutputType>` and `<IsTestProject>true</IsTestProject>`
