@@ -88,7 +88,9 @@ internal sealed class LzmaEncoder : IDisposable
     }
 
     /// <summary>
-    /// Resets all probability models and state.
+    /// Resets all probability models, LZMA state, and rep distances.
+    /// Does NOT reset the match-finder dictionary — use <see cref="ResetDictionary"/>
+    /// for that. LZMA2 state resets (control 0xA0/0xC0) keep the dictionary.
     /// </summary>
     public void ResetState()
     {
@@ -106,36 +108,92 @@ internal sealed class LzmaEncoder : IDisposable
         RangeDecoder.InitProbs(_litProbs);
         RangeDecoder.InitProbs(_matchLenProbs);
         RangeDecoder.InitProbs(_repLenProbs);
+    }
+
+    /// <summary>
+    /// Resets the match-finder dictionary. Call at the start of an independent
+    /// encoding unit (an XZ block); LZMA2 chunks within a block share the dictionary.
+    /// </summary>
+    public void ResetDictionary()
+    {
         _matchFinder.Reset();
     }
 
     /// <summary>
-    /// Encodes input data into LZMA compressed output (including the range coder init byte).
-    /// This is used for LZMA2 chunk encoding.
+    /// Appends data to the match-finder window without encoding it yet.
+    /// </summary>
+    public void Append(ReadOnlySpan<byte> data)
+    {
+        _matchFinder.SetInput(data);
+    }
+
+    /// <summary>
+    /// Encodes input data as one complete, independent LZMA stream
+    /// (including the range coder init byte). Resets state and dictionary.
     /// </summary>
     /// <param name="input">Uncompressed input data.</param>
     /// <param name="output">Stream to write compressed LZMA data to.</param>
     /// <returns>Number of bytes written to output.</returns>
     public long Encode(ReadOnlySpan<byte> input, Stream output)
     {
+        ResetState();
+        ResetDictionary();
+        Append(input);
+        return EncodeChunk(input, 0, input.Length, output);
+    }
+
+    /// <summary>
+    /// Encodes one LZMA2 chunk of a larger block. The dictionary (match finder),
+    /// probability models, and rep distances carry over from previous chunks, so
+    /// matches may reference data from earlier chunks in the same block.
+    /// The chunk's data must already have been supplied via <see cref="Append"/>.
+    /// </summary>
+    /// <param name="block">The full block being encoded (for look-back reads).</param>
+    /// <param name="chunkStart">Position in <paramref name="block"/> where this chunk starts.</param>
+    /// <param name="chunkLen">Number of bytes to encode.</param>
+    /// <param name="output">Stream to write compressed LZMA data to (fresh range coder per chunk).</param>
+    /// <param name="sizeLimit">Abort once this many compressed bytes have been produced
+    /// (the caller will store the chunk uncompressed instead). The encoder's probability
+    /// state is garbage after an abort — the caller must reset state before the next
+    /// chunk, which LZMA2 requires after an uncompressed chunk anyway.</param>
+    /// <returns>Number of bytes written to output, or -1 if <paramref name="sizeLimit"/>
+    /// was exceeded (partial output was written and must be discarded).</returns>
+    public long EncodeChunk(ReadOnlySpan<byte> block, int chunkStart, int chunkLen, Stream output,
+                            long sizeLimit = long.MaxValue)
+    {
         var rc = new RangeEncoder(output);
         // The range encoder's cache mechanism (initialized with _cache=0, _cacheSize=1)
         // naturally outputs the 0x00 init byte during the first ShiftLow call.
         // Do NOT call WriteInitByte here - it would produce a duplicate 0x00 byte.
 
-        _matchFinder.SetInput(input);
-        int pos = 0;
-        int inputLen = input.Length;
+        int pos = chunkStart;
+        int chunkEnd = chunkStart + chunkLen;
 
-        while (pos < inputLen)
+        // With a size limit set, also abort once the chunk is demonstrably
+        // expanding (output has caught up with input after a warm-up window):
+        // incompressible chunks are then abandoned after ~16 KB instead of
+        // being fully range-coded and thrown away.
+        bool limited = sizeLimit != long.MaxValue;
+
+        while (pos < chunkEnd)
         {
+            long produced = rc.BytesWritten;
+            if (produced >= sizeLimit
+                || (limited && produced >= pos - chunkStart && pos - chunkStart >= 16384))
+            {
+                // Incompressible: give up early, but keep feeding the dictionary
+                // so later chunks can still match against this data.
+                _matchFinder.Skip(chunkEnd - pos);
+                return -1;
+            }
+
             int available = _matchFinder.Available;
             int posState = pos & _posMask;
             if (available < 2)
             {
                 // Encode remaining as literals
                 rc.EncodeBit(ref _isMatch[(_state << LzmaConstants.kNumPosStatesBitsMax) + posState], 0);
-                EncodeLiteral(rc, input, input[pos], pos > 0 ? input[pos - 1] : (byte)0, pos);
+                EncodeLiteral(rc, block, block[pos], pos > 0 ? block[pos - 1] : (byte)0, pos);
                 _matchFinder.MovePos();
                 pos++;
                 continue;
@@ -147,12 +205,13 @@ internal sealed class LzmaEncoder : IDisposable
             bool isRep = false;
             int repIndex = -1;
 
-            // Check rep matches first
-            int maxLen = Math.Min(LzmaConstants.kMatchMaxLen, available);
-            int rep0Len = GetRepMatchLen(input, pos, _rep0, maxLen);
-            int rep1Len = GetRepMatchLen(input, pos, _rep1, maxLen);
-            int rep2Len = GetRepMatchLen(input, pos, _rep2, maxLen);
-            int rep3Len = GetRepMatchLen(input, pos, _rep3, maxLen);
+            // Check rep matches first. Lengths are capped at the chunk boundary:
+            // a single symbol must not span two LZMA2 chunks.
+            int maxLen = Math.Min(LzmaConstants.kMatchMaxLen, chunkEnd - pos);
+            int rep0Len = GetRepMatchLen(block, pos, _rep0, maxLen);
+            int rep1Len = GetRepMatchLen(block, pos, _rep1, maxLen);
+            int rep2Len = GetRepMatchLen(block, pos, _rep2, maxLen);
+            int rep3Len = GetRepMatchLen(block, pos, _rep3, maxLen);
 
             int bestRepLen = Math.Max(Math.Max(rep0Len, rep1Len), Math.Max(rep2Len, rep3Len));
 
@@ -184,13 +243,13 @@ internal sealed class LzmaEncoder : IDisposable
             }
 
             // Encode
-            byte prevByte = pos > 0 ? input[pos - 1] : (byte)0;
+            byte prevByte = pos > 0 ? block[pos - 1] : (byte)0;
 
             if (bestLen < LzmaConstants.kMatchMinLen || (bestLen == LzmaConstants.kMatchMinLen && !isRep))
             {
                 // Literal
                 rc.EncodeBit(ref _isMatch[(_state << LzmaConstants.kNumPosStatesBitsMax) + posState], 0);
-                EncodeLiteral(rc, input, input[pos], prevByte, pos);
+                EncodeLiteral(rc, block, block[pos], prevByte, pos);
                 _matchFinder.MovePos();
                 pos++;
             }
@@ -218,14 +277,15 @@ internal sealed class LzmaEncoder : IDisposable
         return rc.BytesWritten;
     }
 
-    private int GetRepMatchLen(ReadOnlySpan<byte> input, int pos, int dist, int maxLen)
+    private static int GetRepMatchLen(ReadOnlySpan<byte> block, int pos, int dist, int maxLen)
     {
         if (dist < 0 || pos - dist - 1 < 0)
             return 0;
 
+        // maxLen is already capped at the chunk boundary by the caller.
         int srcPos = pos - dist - 1;
         int len = 0;
-        while (len < maxLen && pos + len < input.Length && input[srcPos + len] == input[pos + len])
+        while (len < maxLen && block[srcPos + len] == block[pos + len])
             len++;
         return len;
     }
@@ -247,14 +307,6 @@ internal sealed class LzmaEncoder : IDisposable
             EncodeMatchedLiteral(rc, curByte, matchByte, probsOffset);
         }
         _state = LzmaConstants.StateUpdateLiteral(_state);
-    }
-
-    /// <summary>
-    /// Encodes input data into LZMA compressed output for LZMA2.
-    /// </summary>
-    public long EncodeForLzma2(ReadOnlyMemory<byte> input, Stream output)
-    {
-        return Encode(input.Span, output);
     }
 
     private void EncodeNormalLiteral(RangeEncoder rc, byte curByte, int probsOffset)

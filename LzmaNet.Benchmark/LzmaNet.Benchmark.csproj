@@ -9,8 +9,4 @@
     <ProjectReference Include="../LzmaNet/LzmaNet.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <PackageReference Include="ZCS.XZ" />
-  </ItemGroup>
-
 </Project>
