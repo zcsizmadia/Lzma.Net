@@ -7,6 +7,8 @@ namespace LzmaNet.RangeCoder;
 /// <summary>
 /// LZMA range encoder. Encodes bits into a range-coded bitstream
 /// using adaptive probability models with 11-bit precision.
+/// Output bytes are buffered internally to avoid a virtual
+/// <see cref="Stream.WriteByte"/> call per compressed byte.
 /// </summary>
 internal sealed class RangeEncoder
 {
@@ -14,15 +16,18 @@ internal sealed class RangeEncoder
     private const uint kBitModelTotal = RangeDecoder.kBitModelTotal;
     private const int kNumMoveBits = RangeDecoder.kNumMoveBits;
     private const uint kTopValue = 1u << 24;
+    private const int kOutBufferSize = 4096;
 
     private ulong _low;
     private uint _range;
     private uint _cacheSize;
     private byte _cache;
     private readonly Stream _output;
+    private readonly byte[] _outBuffer = new byte[kOutBufferSize];
+    private int _outPos;
     private long _bytesWritten;
 
-    /// <summary>Total bytes written to the output stream.</summary>
+    /// <summary>Total bytes written (including bytes still in the internal buffer).</summary>
     public long BytesWritten => _bytesWritten;
 
     /// <summary>
@@ -39,6 +44,24 @@ internal sealed class RangeEncoder
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void WriteByteBuffered(byte b)
+    {
+        if (_outPos == kOutBufferSize)
+            FlushBuffer();
+        _outBuffer[_outPos++] = b;
+        _bytesWritten++;
+    }
+
+    private void FlushBuffer()
+    {
+        if (_outPos > 0)
+        {
+            _output.Write(_outBuffer, 0, _outPos);
+            _outPos = 0;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void ShiftLow()
     {
         uint low = (uint)_low;
@@ -49,8 +72,7 @@ internal sealed class RangeEncoder
             byte temp = _cache;
             do
             {
-                _output.WriteByte((byte)(temp + highByte));
-                _bytesWritten++;
+                WriteByteBuffered((byte)(temp + highByte));
                 temp = 0xFF;
             }
             while (--_cacheSize != 0);
@@ -140,31 +162,33 @@ internal sealed class RangeEncoder
     }
 
     /// <summary>
-    /// Flushes the encoder, writing all remaining bytes.
+    /// Flushes the encoder, writing all remaining bytes to the output stream.
     /// Must be called after all data is encoded.
     /// </summary>
     public void FlushData()
     {
         for (int i = 0; i < 5; i++)
             ShiftLow();
+        FlushBuffer();
     }
 
     /// <summary>
-    /// Writes a single byte directly (not range-coded) to the output stream.
+    /// Writes a single byte directly (not range-coded) to the output.
     /// Used for the LZMA initial zero byte.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteInitByte()
     {
-        _output.WriteByte(0x00);
-        _bytesWritten++;
+        WriteByteBuffered(0x00);
     }
 
     /// <summary>
     /// Resets the encoder state for a new encoding session on the same stream.
+    /// Any buffered bytes from a previous session are flushed first.
     /// </summary>
     public void Reset()
     {
+        FlushBuffer();
         _low = 0;
         _range = 0xFFFFFFFF;
         _cacheSize = 1;
@@ -172,7 +196,7 @@ internal sealed class RangeEncoder
     }
 
     /// <summary>
-    /// Gets the number of pending bytes (not yet flushed) in the encoder.
+    /// Gets the number of pending bytes (not yet produced by the coder) in the encoder.
     /// </summary>
     public long PendingBytes => _cacheSize + 1;
 }

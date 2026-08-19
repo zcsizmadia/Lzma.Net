@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: 0BSD
 
-using System.Buffers;
-
 using LzmaNet.Lzma;
 using LzmaNet.RangeCoder;
 
@@ -10,10 +8,12 @@ namespace LzmaNet.Lzma2;
 /// <summary>
 /// LZMA2 decoder. Processes LZMA2 chunks (control byte + data) and dispatches
 /// to the underlying LZMA decoder or copies uncompressed data.
+/// The output buffer serves as the dictionary window: XZ blocks always begin with
+/// a dictionary reset and the caller supplies a buffer for the whole block, so
+/// no separate sliding-window buffer is needed.
 /// </summary>
 internal sealed class Lzma2Decoder : IDisposable
 {
-    private readonly OutputWindow _window;
     private LzmaDecoder? _lzmaDecoder;
     private int _lc, _lp, _pb;
     private bool _needProperties;
@@ -21,10 +21,12 @@ internal sealed class Lzma2Decoder : IDisposable
     /// <summary>
     /// Creates a new LZMA2 decoder with the given dictionary size.
     /// </summary>
-    /// <param name="dictSize">Dictionary size in bytes.</param>
+    /// <param name="dictSize">Dictionary size in bytes (from the XZ block header).
+    /// Retained for API symmetry; the output buffer acts as the window.</param>
     public Lzma2Decoder(int dictSize)
     {
-        _window = new OutputWindow(dictSize);
+        if (dictSize < 1)
+            throw new LzmaDataErrorException("Invalid LZMA2 dictionary size.");
         _needProperties = true;
     }
 
@@ -33,7 +35,7 @@ internal sealed class Lzma2Decoder : IDisposable
     /// </summary>
     public int DecodeWithConsumed(ReadOnlyMemory<byte> input, Span<byte> output, out int consumed)
     {
-        int outPos = DecodeInternal(input, output, out consumed);
+        int outPos = DecodeInternal(input.Span, output, out consumed);
         return outPos;
     }
 
@@ -45,14 +47,22 @@ internal sealed class Lzma2Decoder : IDisposable
     /// <returns>Number of decompressed bytes written.</returns>
     public int Decode(ReadOnlyMemory<byte> input, Span<byte> output)
     {
+        return DecodeInternal(input.Span, output, out _);
+    }
+
+    /// <summary>
+    /// Decodes a complete LZMA2 stream from the input span into the output span.
+    /// </summary>
+    public int Decode(ReadOnlySpan<byte> input, Span<byte> output)
+    {
         return DecodeInternal(input, output, out _);
     }
 
-    private int DecodeInternal(ReadOnlyMemory<byte> input, Span<byte> output, out int consumed)
+    private int DecodeInternal(ReadOnlySpan<byte> span, Span<byte> output, out int consumed)
     {
-        var span = input.Span;
         int inPos = 0;
         int outPos = 0;
+        int dictStart = 0;
         bool sawEndMarker = false;
 
         while (inPos < span.Length)
@@ -72,7 +82,7 @@ internal sealed class Lzma2Decoder : IDisposable
                 if (control == 0x01)
                 {
                     // Dictionary reset
-                    _window.Reset();
+                    dictStart = outPos;
                     _needProperties = true;
                 }
 
@@ -82,8 +92,8 @@ internal sealed class Lzma2Decoder : IDisposable
 
                 EnsureAvailable(span, inPos, dataSize, "Truncated LZMA2 uncompressed chunk.");
                 EnsureOutputAvailable(output, outPos, dataSize);
-                var uncompData = span.Slice(inPos, dataSize);
-                _window.CopyUncompressed(uncompData, output, ref outPos);
+                span.Slice(inPos, dataSize).CopyTo(output.Slice(outPos, dataSize));
+                outPos += dataSize;
                 inPos += dataSize;
                 continue;
             }
@@ -119,28 +129,29 @@ internal sealed class Lzma2Decoder : IDisposable
                 throw new LzmaDataErrorException("LZMA properties not set.");
 
             if (resetDict)
-                _window.Reset();
+                dictStart = outPos;
 
-            if (resetState || _lzmaDecoder == null)
+            if (_lzmaDecoder == null || (resetState && _lzmaDecoder.LcLp != _lc + _lp))
             {
+                // Allocate only when the literal-coder shape changes; otherwise
+                // the existing probability arrays are reused via ResetState.
                 _lzmaDecoder = new LzmaDecoder(_lc, _lp, _pb);
             }
-            else if (newProps)
+            else if (resetState)
             {
+                // newProps implies resetState (control >= 0xC0), so property updates
+                // always land here.
                 _lzmaDecoder.SetProperties(_lc, _lp, _pb);
-            }
-
-            if (resetState)
                 _lzmaDecoder.ResetState();
+            }
 
             // Decode LZMA chunk
             EnsureAvailable(span, inPos, compSize, "Truncated LZMA2 compressed chunk.");
             EnsureOutputAvailable(output, outPos, uncompSize);
-            var chunkInput = input.Slice(inPos, compSize);
             var rc = new RangeDecoder();
-            rc.Init(chunkInput, 0);
+            rc.Init(span.Slice(inPos, compSize), 0);
 
-            _lzmaDecoder.DecodeLzma2Chunk(ref rc, _window, output, ref outPos, uncompSize);
+            _lzmaDecoder.DecodeChunk(ref rc, output, ref outPos, dictStart, uncompSize);
             inPos += compSize;
         }
 
@@ -165,6 +176,6 @@ internal sealed class Lzma2Decoder : IDisposable
 
     public void Dispose()
     {
-        _window.Dispose();
+        // Nothing to release; the output buffer serves as the dictionary window.
     }
 }

@@ -223,16 +223,15 @@ public sealed class XzCompressStream : Stream
         var buffer = _inputBuffer.GetBuffer();
         int totalLen = (int)_inputBuffer.Length;
 
-        // Split into blocks
-        var blocks = new List<byte[]>();
+        // Split into block slices over the input buffer. No copies are needed:
+        // encoders only read, and the buffer is not mutated until after the
+        // parallel loop completes.
+        var blocks = new List<ReadOnlyMemory<byte>>();
         int pos = 0;
         while (pos < totalLen && blocks.Count < _threads)
         {
             int len = Math.Min(totalLen - pos, _blockSize);
-            // Must copy because parallel encoders need independent buffers
-            var block = new byte[len];
-            Buffer.BlockCopy(buffer, pos, block, 0, len);
-            blocks.Add(block);
+            blocks.Add(buffer.AsMemory(pos, len));
             pos += len;
         }
 
@@ -245,7 +244,7 @@ public sealed class XzCompressStream : Stream
             {
                 var blockStream = new MemoryStream();
                 var (unpaddedSize, uncompressedSize) = XzBlock.WriteBlock(
-                    blockStream, blocks[i].AsMemory(), encoder, _checkType);
+                    blockStream, blocks[i], encoder, _checkType);
                 results[i] = (blockStream, unpaddedSize, uncompressedSize);
             }
             finally
@@ -282,15 +281,13 @@ public sealed class XzCompressStream : Stream
         var buffer = _inputBuffer.GetBuffer();
         int totalLen = (int)_inputBuffer.Length;
 
-        // Split into blocks
-        var blocks = new List<byte[]>();
+        // Split into block slices over the input buffer (no copies; see sync variant).
+        var blocks = new List<ReadOnlyMemory<byte>>();
         int pos = 0;
         while (pos < totalLen && blocks.Count < _threads)
         {
             int len = Math.Min(totalLen - pos, _blockSize);
-            var block = new byte[len];
-            Buffer.BlockCopy(buffer, pos, block, 0, len);
-            blocks.Add(block);
+            blocks.Add(buffer.AsMemory(pos, len));
             pos += len;
         }
 
@@ -303,7 +300,7 @@ public sealed class XzCompressStream : Stream
             {
                 var blockStream = new MemoryStream();
                 var (unpaddedSize, uncompressedSize) = XzBlock.WriteBlock(
-                    blockStream, blocks[i].AsMemory(), encoder, _checkType);
+                    blockStream, blocks[i], encoder, _checkType);
                 results[i] = (blockStream, unpaddedSize, uncompressedSize);
             }
             finally

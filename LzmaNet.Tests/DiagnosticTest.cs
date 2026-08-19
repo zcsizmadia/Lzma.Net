@@ -48,13 +48,17 @@ public class DiagnosticTest
         ushort[] decProbs = new ushort[4];
         for (int i = 0; i < 4; i++) decProbs[i] = 1024;
 
+        // RangeDecoder is a ref struct — decode everything before awaiting.
+        uint[] bits = new uint[4];
         var dec = new RangeDecoder();
         dec.Init(data.AsMemory(), 0);
+        for (int i = 0; i < 4; i++)
+            bits[i] = dec.DecodeBit(ref decProbs[i]);
 
-        await Assert.That(dec.DecodeBit(ref decProbs[0])).IsEqualTo(0u);
-        await Assert.That(dec.DecodeBit(ref decProbs[1])).IsEqualTo(1u);
-        await Assert.That(dec.DecodeBit(ref decProbs[2])).IsEqualTo(0u);
-        await Assert.That(dec.DecodeBit(ref decProbs[3])).IsEqualTo(1u);
+        await Assert.That(bits[0]).IsEqualTo(0u);
+        await Assert.That(bits[1]).IsEqualTo(1u);
+        await Assert.That(bits[2]).IsEqualTo(0u);
+        await Assert.That(bits[3]).IsEqualTo(1u);
     }
 
     [Test]
@@ -109,6 +113,9 @@ public class DiagnosticTest
         enc.FlushData();
 
         var data = ms.ToArray();
+
+        // RangeDecoder is a ref struct — decode everything before awaiting.
+        byte[] decoded = new byte[bytes.Length];
         var dec = new RangeDecoder();
         dec.Init(data.AsMemory(), 0);
 
@@ -121,9 +128,11 @@ public class DiagnosticTest
             uint symbol = 1;
             for (int bit = 0; bit < 8; bit++)
                 symbol = (symbol << 1) | dec.DecodeBit(ref decProbs[probsOffset + symbol]);
-            byte decoded = (byte)(symbol & 0xFF);
-            await Assert.That(decoded).IsEqualTo(bytes[i]);
+            decoded[i] = (byte)(symbol & 0xFF);
         }
+
+        for (int i = 0; i < bytes.Length; i++)
+            await Assert.That(decoded[i]).IsEqualTo(bytes[i]);
     }
 
     [Test]
@@ -138,10 +147,9 @@ public class DiagnosticTest
 
         var decoder = new LzmaDecoder(props.Lc, props.Lp, props.Pb);
         decoder.ResetState();
-        var window = new OutputWindow(props.DictionarySize);
         byte[] output = new byte[2];
         int outPos = 0;
-        decoder.Decode(compressed.AsMemory(), 0, window, output, ref outPos, 2);
+        decoder.Decode(compressed.AsMemory(), 0, output, ref outPos, 2);
         await Assert.That(output.SequenceEqual(input)).IsTrue();
     }
 
@@ -158,18 +166,16 @@ public class DiagnosticTest
 
         var decoder2 = new LzmaDecoder(props.Lc, props.Lp, props.Pb);
         decoder2.ResetState();
-        var window2 = new OutputWindow(props.DictionarySize);
         byte[] output2 = new byte[input.Length - 1];
         int outPos2 = 0;
-        decoder2.Decode(compressed.AsMemory(), 0, window2, output2, ref outPos2, input.Length - 1);
+        decoder2.Decode(compressed.AsMemory(), 0, output2, ref outPos2, input.Length - 1);
         await Assert.That(output2.SequenceEqual(input[..(input.Length - 1)])).IsTrue();
 
         var decoder = new LzmaDecoder(props.Lc, props.Lp, props.Pb);
         decoder.ResetState();
-        var window = new OutputWindow(props.DictionarySize);
         byte[] output = new byte[input.Length];
         int outPos = 0;
-        decoder.Decode(compressed.AsMemory(), 0, window, output, ref outPos, input.Length);
+        decoder.Decode(compressed.AsMemory(), 0, output, ref outPos, input.Length);
         await Assert.That(output.SequenceEqual(input)).IsTrue();
     }
 
@@ -191,10 +197,9 @@ public class DiagnosticTest
 
         var decoder = new LzmaDecoder(props.Lc, props.Lp, props.Pb);
         decoder.ResetState();
-        var window = new OutputWindow(props.DictionarySize);
         byte[] output = new byte[input.Length];
         int outPos = 0;
-        decoder.Decode(compressed.AsMemory(), 0, window, output, ref outPos, input.Length);
+        decoder.Decode(compressed.AsMemory(), 0, output, ref outPos, input.Length);
         await Assert.That(output.SequenceEqual(input)).IsTrue();
     }
 
@@ -211,12 +216,11 @@ public class DiagnosticTest
 
         var decoder = new LzmaDecoder(props.Lc, props.Lp, props.Pb);
         decoder.ResetState();
-        var window = new OutputWindow(props.DictionarySize);
         byte[] output = new byte[input.Length];
         int outPos = 0;
         var rc = new RangeDecoder();
         rc.Init(compressed.AsMemory(), 0);
-        decoder.DecodeLzma2Chunk(ref rc, window, output, ref outPos, input.Length);
+        decoder.DecodeChunk(ref rc, output, ref outPos, 0, input.Length);
         await Assert.That(output.SequenceEqual(input)).IsTrue();
     }
 
@@ -232,10 +236,9 @@ public class DiagnosticTest
 
         var decoder = new LzmaDecoder(props.Lc, props.Lp, props.Pb);
         decoder.ResetState();
-        var window = new OutputWindow(props.DictionarySize);
         byte[] output = new byte[5];
         int outPos = 0;
-        decoder.Decode(compressed.AsMemory(), 0, window, output, ref outPos, 5);
+        decoder.Decode(compressed.AsMemory(), 0, output, ref outPos, 5);
         await Assert.That(output.SequenceEqual(input)).IsTrue();
     }
 

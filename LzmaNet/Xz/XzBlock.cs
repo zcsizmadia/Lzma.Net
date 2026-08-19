@@ -254,6 +254,79 @@ internal static class XzBlock
     }
 
     /// <summary>
+    /// Reads one complete raw (still compressed) block from the stream without decoding it.
+    /// Returns false if an index indicator (0x00) is found instead of a block.
+    /// The returned stream is positioned at 0 and exposable, so
+    /// <see cref="ReadBlockToBuffer"/> can decode it without copying.
+    /// Used by parallel block decompression to separate I/O from CPU-bound decoding.
+    /// </summary>
+    internal static bool ReadRawBlock(Stream stream, int checkType, out MemoryStream? rawBlock)
+    {
+        rawBlock = null;
+
+        int headerSizeByte = stream.ReadByte();
+        if (headerSizeByte < 0)
+            throw new LzmaDataErrorException("Unexpected end of XZ stream.");
+        if (headerSizeByte == 0)
+            return false; // Index indicator
+
+        var raw = new MemoryStream();
+        try
+        {
+            int headerSize = (headerSizeByte + 1) * 4;
+            byte[] header = ArrayPool<byte>.Shared.Rent(headerSize);
+            long compressedSize;
+            try
+            {
+                header[0] = (byte)headerSizeByte;
+                ReadExact(stream, header.AsSpan(1, headerSize - 1));
+                raw.Write(header, 0, headerSize);
+
+                int headerDataLength = headerSize - 4;
+                if (!Crc32.Verify(header.AsSpan(0, headerDataLength),
+                        header.AsSpan(headerDataLength, 4)))
+                    throw new LzmaDataErrorException("XZ block header CRC32 mismatch.");
+
+                byte flags = header[1];
+                if ((flags & 0x3C) != 0)
+                    throw new LzmaDataErrorException("Reserved bits set in XZ block flags.");
+
+                if ((flags & 0x40) != 0)
+                {
+                    int pos = 2;
+                    compressedSize = ToSupportedSize(
+                        ReadMultibyteInt(header.AsSpan(0, headerDataLength), ref pos),
+                        "XZ block compressed size");
+                    CopyExact(stream, raw, (int)compressedSize);
+                }
+                else
+                {
+                    long start = raw.Length;
+                    CopyLzma2Stream(stream, raw);
+                    compressedSize = raw.Length - start;
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(header);
+            }
+
+            int paddingSize = (4 - ((int)compressedSize & 3)) & 3;
+            int checkSize = XzConstants.GetCheckSize(checkType);
+            CopyExact(stream, raw, paddingSize + checkSize);
+
+            raw.Position = 0;
+            rawBlock = raw;
+            return true;
+        }
+        catch
+        {
+            raw.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
     /// Asynchronously reads one complete block from the source, then performs CPU-bound decoding.
     /// </summary>
     internal static async ValueTask<BlockBufferResult> ReadBlockToBufferAsync(

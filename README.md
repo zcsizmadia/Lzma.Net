@@ -11,6 +11,7 @@ A **native C# implementation** of the XZ/LZMA2/LZMA compression format. No nativ
 - **One-shot API** — `XzCompressor.Compress` / `Decompress` for simple byte-array operations
 - **Async API** — `CompressAsync` / `DecompressAsync` and async stream methods for non-blocking I/O
 - **Multi-threaded compression** — parallel block compression via the `Threads` option
+- **Multi-threaded decompression** — parallel block decoding of multi-block streams via `XzCompressor.Decompress(data, threads)` / `new XzDecompressStream(stream, threads)`
 - **Presets 0–9** — matching `xz` CLI compression levels and dictionary sizes
 - **Extreme mode** — equivalent to `xz -e`, spends more CPU time for better compression
 - **Integrity checks** — CRC32, CRC64, SHA-256, or no check
@@ -143,14 +144,17 @@ All tuning knobs are exposed through the `XzCompressOptions` class:
 
 See [BENCHMARK.md](BENCHMARK.md) for detailed performance comparisons against native liblzma.
 
-Quick summary (16 MB data, preset 6, single-threaded):
+Quick summary (16 MB data, preset 6; percentages relative to the `xz` CLI at the same thread count):
 
-| | Compress | Decompress |
-|---|---:|---:|
-| **LzmaNet** (pure C#) | 10.9 MB/s | 40.7 MB/s |
-| liblzma (native C) | 8.9 MB/s | 64.5 MB/s |
+| | Compress | % of xz | Decompress | % of xz |
+|---|---:|---:|---:|---:|
+| **LzmaNet** (pure C#, 1 thread) | 38.9 MB/s | 437% | 60.8 MB/s | 99% |
+| **LzmaNet** (pure C#, 20 threads) | 186.0 MB/s | 1979% | 333.3 MB/s | 369% |
+| liblzma (native C, 1 thread) | 10.5 MB/s | 118% | 78.0 MB/s | 127% |
+| xz CLI (native, 1 thread) — *baseline* | 8.9 MB/s | 100% | 61.3 MB/s | 100% |
+| xz CLI (native, 20 threads) — *baseline* | 9.4 MB/s | 100% | 90.4 MB/s | 100% |
 
-LzmaNet is faster at compression; liblzma is faster at decompression due to decades of hand-optimized C in the range decoder.
+LzmaNet compresses ~3.7× faster than native liblzma and decompresses at native `xz` speed single-threaded. Multi-block streams can additionally be compressed *and* decompressed with parallel block processing (`XzCompressOptions.Threads`, `XzCompressor.Decompress(data, threads)`).
 
 ## Interoperability
 
