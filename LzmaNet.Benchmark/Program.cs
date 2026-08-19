@@ -82,9 +82,10 @@ foreach (int threads in threadCounts)
     sw.Stop();
     long compressMs = sw.ElapsedMilliseconds;
 
-    // Decompress
+    // Decompress (parallel block decode when threads > 1; the MT-compressed
+    // stream contains multiple blocks, which is what parallel decode needs)
     sw.Restart();
-    byte[] decompressed = XzCompressor.Decompress(compressed);
+    byte[] decompressed = XzCompressor.Decompress(compressed, threads);
     sw.Stop();
     long decompressMs = sw.ElapsedMilliseconds;
 

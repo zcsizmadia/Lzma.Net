@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: 0BSD
 
+using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace LzmaNet.Check;
 
 /// <summary>
 /// CRC64 using the polynomial from the ECMA-182 standard (0xC96C5795D7870F42 reflected).
 /// Used by LZMA_CHECK_CRC64 in XZ containers.
+/// Implemented with slicing-by-8 for high throughput on bulk data.
 /// </summary>
 internal static class Crc64
 {
+    // 8 tables of 256 entries, flattened: Table[k * 256 + v] is the CRC of
+    // byte v followed by k zero bytes. Table[0..256) is the classic table.
     private static readonly ulong[] Table = CreateTable();
 
     private static uint[] Crc32Table => Crc32Table_Backing ??= CreateCrc32Table();
@@ -18,7 +23,7 @@ internal static class Crc64
     private static ulong[] CreateTable()
     {
         const ulong Poly = 0xC96C5795D7870F42UL;
-        var table = new ulong[256];
+        var table = new ulong[8 * 256];
         for (uint i = 0; i < 256; i++)
         {
             ulong crc = i;
@@ -30,6 +35,15 @@ internal static class Crc64
                     crc >>= 1;
             }
             table[i] = crc;
+        }
+
+        for (int k = 1; k < 8; k++)
+        {
+            for (int i = 0; i < 256; i++)
+            {
+                ulong prev = table[(k - 1) * 256 + i];
+                table[k * 256 + i] = (prev >> 8) ^ table[(byte)prev];
+            }
         }
         return table;
     }
@@ -59,15 +73,31 @@ internal static class Crc64
     /// <param name="data">The input data.</param>
     /// <param name="crc">Previous CRC value (0 for initial calculation).</param>
     /// <returns>Updated CRC64 value.</returns>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static ulong Compute(ReadOnlySpan<byte> data, ulong crc = 0)
     {
         crc = ~crc;
-        ref ulong tableRef = ref System.Runtime.InteropServices.MemoryMarshal.GetArrayDataReference(Table);
-        for (int i = 0; i < data.Length; i++)
+        ref ulong t = ref MemoryMarshal.GetArrayDataReference(Table);
+        int i = 0;
+
+        // Slicing-by-8: process 8 input bytes per iteration.
+        int blockEnd = data.Length - 7;
+        while (i < blockEnd)
         {
-            crc = Unsafe.Add(ref tableRef, (int)(byte)(crc ^ data[i])) ^ (crc >> 8);
+            ulong x = BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(i)) ^ crc;
+            crc = Unsafe.Add(ref t, 7 * 256 + (int)(x & 0xFF))
+                ^ Unsafe.Add(ref t, 6 * 256 + (int)((x >> 8) & 0xFF))
+                ^ Unsafe.Add(ref t, 5 * 256 + (int)((x >> 16) & 0xFF))
+                ^ Unsafe.Add(ref t, 4 * 256 + (int)((x >> 24) & 0xFF))
+                ^ Unsafe.Add(ref t, 3 * 256 + (int)((x >> 32) & 0xFF))
+                ^ Unsafe.Add(ref t, 2 * 256 + (int)((x >> 40) & 0xFF))
+                ^ Unsafe.Add(ref t, 1 * 256 + (int)((x >> 48) & 0xFF))
+                ^ Unsafe.Add(ref t, (int)(x >> 56));
+            i += 8;
         }
+
+        for (; i < data.Length; i++)
+            crc = Unsafe.Add(ref t, (int)(byte)(crc ^ data[i])) ^ (crc >> 8);
+
         return ~crc;
     }
 
@@ -78,7 +108,7 @@ internal static class Crc64
     public static void WriteLE(ReadOnlySpan<byte> data, Span<byte> output)
     {
         ulong crc = Compute(data);
-        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(output, crc);
+        BinaryPrimitives.WriteUInt64LittleEndian(output, crc);
     }
 
     /// <summary>
@@ -88,7 +118,7 @@ internal static class Crc64
     public static bool Verify(ReadOnlySpan<byte> data, ReadOnlySpan<byte> expected)
     {
         ulong computed = Compute(data);
-        ulong stored = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(expected);
+        ulong stored = BinaryPrimitives.ReadUInt64LittleEndian(expected);
         return computed == stored;
     }
 

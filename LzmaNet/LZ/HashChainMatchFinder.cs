@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: 0BSD
 
 using System.Buffers;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 
 namespace LzmaNet.LZ;
@@ -8,6 +9,9 @@ namespace LzmaNet.LZ;
 /// <summary>
 /// Hash chain (HC4) match finder for LZMA compression.
 /// Finds longest matches using 4-byte hashing with chain traversal.
+/// The chain table size is rounded up to a power of two so slot mapping uses a
+/// mask instead of an integer modulo in the chain-walk inner loop, and match
+/// lengths are computed 8 bytes at a time.
 /// </summary>
 internal sealed class HashChainMatchFinder : IDisposable
 {
@@ -16,6 +20,7 @@ internal sealed class HashChainMatchFinder : IDisposable
     private const int kFixHashSize = kHash2Size + kHash3Size;
 
     private readonly int _cyclicBufferSize;
+    private readonly int _cyclicMask;
     private readonly int _hashMask;
     private readonly int _cutValue;
     private readonly int _matchMaxLen;
@@ -46,7 +51,9 @@ internal sealed class HashChainMatchFinder : IDisposable
 
     public HashChainMatchFinder(int dictSize, int matchMaxLen, int cutValue)
     {
-        _cyclicBufferSize = dictSize;
+        // Round up to a power of two so chain slots can be computed with a mask.
+        _cyclicBufferSize = (int)BitOperations.RoundUpToPowerOf2((uint)Math.Max(dictSize, 2));
+        _cyclicMask = _cyclicBufferSize - 1;
         _matchMaxLen = matchMaxLen;
         _cutValue = cutValue;
 
@@ -120,9 +127,10 @@ internal sealed class HashChainMatchFinder : IDisposable
         // Need at least 4 bytes for 4-byte hashing
         if (avail >= 4)
         {
-            uint hash2Val = CrcTable[_buffer[cur]] ^ _buffer[cur + 1];
-            uint hash3Val = hash2Val ^ ((uint)CrcTable[_buffer[cur + 2]] << 5);
-            uint hash4Val = hash3Val ^ ((uint)CrcTable[_buffer[cur + 3]] << 13);
+            byte[] buffer = _buffer;
+            uint hash2Val = CrcTable[buffer[cur]] ^ buffer[cur + 1];
+            uint hash3Val = hash2Val ^ ((uint)CrcTable[buffer[cur + 2]] << 5);
+            uint hash4Val = hash3Val ^ ((uint)CrcTable[buffer[cur + 3]] << 13);
 
             uint h2 = hash2Val & (kHash2Size - 1);
             uint h3 = kHash2Size + (hash3Val & (kHash3Size - 1));
@@ -139,13 +147,13 @@ internal sealed class HashChainMatchFinder : IDisposable
             _hash[h4] = _pos;
 
             // Update chain: current position chains to old head
-            _chain[_pos % _cyclicBufferSize] = curMatch;
+            _chain[_pos & _cyclicMask] = curMatch;
 
             _hashUpdatedAtPos = true;
 
             // Check 2-byte hash match
             if (pos2 >= 0 && pos2 >= _pos - _cyclicBufferSize
-                && _buffer[pos2] == _buffer[cur] && _buffer[pos2 + 1] == _buffer[cur + 1])
+                && buffer[pos2] == buffer[cur] && buffer[pos2 + 1] == buffer[cur + 1])
             {
                 if (matchCount < maxMatches)
                 {
@@ -157,8 +165,8 @@ internal sealed class HashChainMatchFinder : IDisposable
 
             // Check 3-byte hash match
             if (pos3 >= 0 && pos3 >= _pos - _cyclicBufferSize && pos3 != pos2
-                && _buffer[pos3] == _buffer[cur] && _buffer[pos3 + 1] == _buffer[cur + 1]
-                && _buffer[pos3 + 2] == _buffer[cur + 2])
+                && buffer[pos3] == buffer[cur] && buffer[pos3 + 1] == buffer[cur + 1]
+                && buffer[pos3 + 2] == buffer[cur + 2])
             {
                 if (matchCount > 0 && lengths[matchCount - 1] < 3)
                 {
@@ -179,12 +187,10 @@ internal sealed class HashChainMatchFinder : IDisposable
 
             while (curMatch >= 0 && curMatch >= _pos - _cyclicBufferSize && count-- > 0)
             {
-                if (_buffer[curMatch + bestLen] == _buffer[cur + bestLen])
+                if (buffer[curMatch + bestLen] == buffer[cur + bestLen])
                 {
-                    int len = 0;
                     int limit = Math.Min(maxLen, _streamPos - curMatch);
-                    while (len < limit && _buffer[curMatch + len] == _buffer[cur + len])
-                        len++;
+                    int len = MatchLength(buffer, curMatch, cur, limit);
 
                     if (len > bestLen)
                     {
@@ -203,11 +209,39 @@ internal sealed class HashChainMatchFinder : IDisposable
                         if (len >= maxLen) break;
                     }
                 }
-                curMatch = _chain[curMatch % _cyclicBufferSize];
+                curMatch = _chain[curMatch & _cyclicMask];
             }
         }
 
         return matchCount;
+    }
+
+    /// <summary>
+    /// Computes the common-prefix length of buffer[a..] and buffer[b..], up to limit,
+    /// comparing 8 bytes at a time.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int MatchLength(byte[] buffer, int a, int b, int limit)
+    {
+        int len = 0;
+
+        if (BitConverter.IsLittleEndian)
+        {
+            ref byte bufRef = ref System.Runtime.InteropServices.MemoryMarshal
+                .GetArrayDataReference(buffer);
+            while (len + 8 <= limit)
+            {
+                ulong x = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref bufRef, a + len))
+                        ^ Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref bufRef, b + len));
+                if (x != 0)
+                    return len + (BitOperations.TrailingZeroCount(x) >> 3);
+                len += 8;
+            }
+        }
+
+        while (len < limit && buffer[a + len] == buffer[b + len])
+            len++;
+        return len;
     }
 
     /// <summary>
@@ -246,7 +280,7 @@ internal sealed class HashChainMatchFinder : IDisposable
         _hash[h2] = _pos;
         _hash[h3] = _pos;
         _hash[h4] = _pos;
-        _chain[_pos % _cyclicBufferSize] = oldHead;
+        _chain[_pos & _cyclicMask] = oldHead;
     }
 
     public int Position => _pos;

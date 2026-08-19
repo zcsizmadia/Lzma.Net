@@ -70,13 +70,20 @@ byte[] compressed = await XzCompressor.CompressAsync(data, new XzCompressOptions
 
 ```csharp
 public static byte[] Decompress(ReadOnlySpan<byte> compressedData)
+public static byte[] Decompress(ReadOnlySpan<byte> compressedData, int threads)
 ```
 
 Decompresses XZ data and returns the result as a new byte array.
 
+The `threads` overload decodes XZ blocks in parallel. Parallelism applies per XZ
+block, so it only helps for multi-block streams (e.g., produced with
+`XzCompressOptions.Threads > 1` or a small `XzCompressOptions.BlockSize`);
+single-block streams decode serially.
+
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `compressedData` | `ReadOnlySpan<byte>` | The XZ compressed data. |
+| `threads` | `int` | Decoder threads: `0` = all CPUs, `1` = single-threaded, `N` = up to N threads. |
 
 **Returns:** `byte[]` — the decompressed data.
 
@@ -86,6 +93,13 @@ Decompresses XZ data and returns the result as a new byte array.
 |-----------|-----------|
 | `LzmaFormatException` | Data is not in valid XZ format. |
 | `LzmaDataErrorException` | Compressed data is corrupt or integrity check failed. |
+
+**Example:**
+
+```csharp
+byte[] restored = XzCompressor.Decompress(compressed);
+byte[] restored = XzCompressor.Decompress(compressed, threads: 0); // parallel block decode
+```
 
 ---
 
@@ -251,22 +265,31 @@ A **read-only** stream that decompresses XZ data on the fly. Reads from the unde
 
 This is a native C# `Stream` implementation — no native code is invoked.
 
-### Constructor
+### Constructors
 
 ```csharp
 public XzDecompressStream(Stream stream, bool leaveOpen = false)
+public XzDecompressStream(Stream stream, int threads, bool leaveOpen = false)
 ```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `stream` | `Stream` | The stream containing XZ compressed data. |
+| `threads` | `int` | Decoder threads: `0` = all CPUs, `1` = single-threaded (default), `N` = up to N threads. |
 | `leaveOpen` | `bool` | If `true`, the underlying stream is not closed on dispose. |
+
+When `threads > 1`, XZ blocks are read sequentially but decoded in parallel
+(synchronous `Read` path). Parallelism applies per XZ block, so multi-block
+streams are required to benefit; up to `threads` decoded blocks are buffered
+in memory at a time, so peak memory use grows with the thread count and block
+size.
 
 **Exceptions:**
 
 | Exception | Condition |
 |-----------|-----------|
 | `ArgumentNullException` | `stream` is `null`. |
+| `ArgumentOutOfRangeException` | `threads` is negative. |
 
 **Example:**
 
