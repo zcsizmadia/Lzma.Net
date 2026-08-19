@@ -23,11 +23,15 @@ Percentages are relative to the `xz` CLI (native) at the same thread count.
 
 ### Multi-threaded (20 threads)
 
+In this table the xz CLI is invoked with `--block-size=1MiB`, matching LzmaNet's
+multi-threaded block layout, so both split the input into 16 independently
+processed blocks (see the next section for why this matters).
+
 | Implementation | Compress | % of xz | Decompress | % of xz | Ratio | Compressed Size |
 |---|---:|---:|---:|---:|---:|---:|
-| **LzmaNet** (pure C#) | 186.0 MB/s | 1979% | 333.3 MB/s | 369% | 22.9% | 3,841,428 |
-| ZCS.XZ (liblzma P/Invoke) | 9.0 MB/s | 96% | 74.1 MB/s | 82% | 22.9% | 3,843,924 |
-| xz CLI (native) — *baseline* | 9.4 MB/s | 100% | 90.4 MB/s | 100% | 22.9% | 3,843,924 |
+| **LzmaNet** (pure C#) | 186.0 MB/s | 425% | 333.3 MB/s | 454% | 22.9% | 3,841,428 |
+| ZCS.XZ (liblzma P/Invoke) | 9.0 MB/s | 21% | 74.1 MB/s | 101% | 22.9% | 3,843,924 |
+| xz CLI (native, `--block-size=1MiB`) — *baseline* | 43.8 MB/s | 100% | 73.4 MB/s | 100% | 22.6% | 3,792,704 |
 
 LzmaNet's multi-threaded decompression uses `XzCompressor.Decompress(data, threads)` /
 `new XzDecompressStream(stream, threads)`, which decode XZ blocks in parallel.
@@ -40,13 +44,13 @@ The thread count is passed to every implementation that accepts one, but they do
 not all parallelize equally on this workload:
 
 - **LzmaNet** — the benchmark sets `Threads = N` *and* `BlockSize = 1 MB`, producing a 16-block stream. Both compression and decompression genuinely run N-wide.
-- **xz CLI** — invoked with `-T N` for both directions. However, in threaded mode xz's default block size is 3× the dictionary (24 MB at preset 6), so 16 MB of input still becomes a **single block**: compression cannot split the work and decompression of its own single-block file cannot be block-parallel. This is why its 20-thread compress rate barely moves.
-- **ZCS.XZ** — `XZCompressOptions.Threads` is passed for compression (same single-block limitation as the CLI, via liblzma's threaded encoder). Its `XZDecompressStream` exposes **no thread option at all** (single-threaded liblzma decoder), so its decompress numbers are single-threaded in both tables.
+- **xz CLI** — invoked with `-T N`, plus `--block-size=1MiB` in the multi-threaded run. The explicit block size matters: in threaded mode xz's *default* block size is 3× the dictionary (24 MB at preset 6), so 16 MB of input becomes a **single block** and `-T 20` yields no speedup at all (measured: ~9 MB/s, same as one thread). With 1 MiB blocks it genuinely parallelizes (~4.7× its single-thread rate) at a small ratio cost. Larger inputs (≫ 24 MB) would parallelize even at the default block size.
+- **ZCS.XZ** — `XZCompressOptions.Threads` is passed for compression, but the wrapper exposes no block-size option, so liblzma's threaded encoder keeps its 24 MB default block and the 16 MB input stays a single block — effectively serial. Its `XZDecompressStream` exposes **no thread option at all** (single-threaded liblzma decoder), so its decompress numbers are single-threaded in both tables.
 
 ## Key Takeaways
 
-- **Compression**: LzmaNet is **~3.7× faster** than native liblzma single-threaded, and scales to ~20× native with parallel block compression.
-- **Decompression**: LzmaNet matches the native `xz` CLI single-threaded and reaches ~80% of the in-process liblzma rate. With parallel block decode of multi-block streams it is **~3.7× faster** than `xz -T20`.
+- **Compression**: LzmaNet is **~3.7× faster** than native liblzma single-threaded, and **~4.2× faster** than a fairly configured `xz -T20 --block-size=1MiB` with parallel block compression.
+- **Decompression**: LzmaNet matches the native `xz` CLI single-threaded and reaches ~80% of the in-process liblzma rate. With parallel block decode of multi-block streams it is **~4.5× faster** than `xz -T20` on the same block layout.
 - **Compression ratio**: All implementations produce essentially identical ratios (~22.9%) at the same preset, confirming algorithmic correctness.
 - **xz CLI overhead**: The CLI tool shows additional process startup and I/O overhead versus the library-based approaches.
 
