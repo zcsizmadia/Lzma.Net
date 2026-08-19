@@ -27,19 +27,18 @@ A **native C# implementation** of the XZ/LZMA2/LZMA compression format. No nativ
 
 ## Benchmarks
 
-See [BENCHMARK.md](BENCHMARK.md) for detailed performance comparisons against native liblzma.
+See [BENCHMARK.md](BENCHMARK.md) for the full methodology and results across real-world, synthetic, and incompressible data.
 
-Quick summary (16 MB data, preset 6; percentages relative to the `xz` CLI at the same thread count):
+Quick summary — [Silesia corpus](https://sun.aei.polsl.pl/~sdeor/index.php?page=silesia) (211.9 MB real-world mix), preset 6, medians of repeated runs, percentages relative to the native `xz` CLI at the same thread count. Decompression is measured on identical xz-produced input files, byte-verified:
 
-| | Compress | % of xz | Decompress | % of xz |
-|---|---:|---:|---:|---:|
-| **LzmaNet** (pure C#, 1 thread) | 38.9 MB/s | 437% | 60.8 MB/s | 99% |
-| **LzmaNet** (pure C#, 20 threads) | 186.0 MB/s | 425% | 333.3 MB/s | 454% |
-| liblzma (native C, 1 thread) | 10.5 MB/s | 118% | 78.0 MB/s | 127% |
-| xz CLI (native, 1 thread) — *baseline* | 8.9 MB/s | 100% | 61.3 MB/s | 100% |
-| xz CLI (native, 20 threads, `--block-size=1MiB`) — *baseline* | 43.8 MB/s | 100% | 73.4 MB/s | 100% |
+| | Compress | % of xz | Decompress | % of xz | Ratio |
+|---|---:|---:|---:|---:|---:|
+| **LzmaNet** (pure C#, 1 thread) | 6.1 MB/s | 226% | 70.8 MB/s | 95% | 27.7% |
+| **LzmaNet** (pure C#, 20 threads) | 26.6 MB/s | 240% | 348.5 MB/s | 224% | 27.8% |
+| xz CLI (native, 1 thread) — *baseline* | 2.7 MB/s | 100% | 74.6 MB/s | 100% | 23.2% |
+| xz CLI (native, 20 threads) — *baseline* | 11.1 MB/s | 100% | 155.8 MB/s | 100% | 23.4% |
 
-*The 20-thread xz baseline uses `--block-size=1MiB` to match LzmaNet's multi-threaded block layout — without it, xz's default 24 MiB blocks leave 16 MB of input as a single block and `-T 20` brings no speedup at all.*
+LzmaNet compresses ~2.3× faster than native xz and decodes at ~95% of its speed single-threaded (2.2× with parallel block decode of multi-block streams). xz achieves a ~4.5-point better ratio — its BT4 near-optimal parser trades speed for ratio, LzmaNet's greedy hash-chain finder trades the other way.
 
 LzmaNet compresses ~3.7× faster than native liblzma and decompresses at native `xz` speed single-threaded. Multi-block streams can additionally be compressed *and* decompressed with parallel block processing (`XzCompressOptions.Threads`, `XzCompressor.Decompress(data, threads)`).
 

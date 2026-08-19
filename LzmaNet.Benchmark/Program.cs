@@ -1,249 +1,316 @@
+// SPDX-License-Identifier: 0BSD
+//
+// Benchmark methodology (see BENCHMARK.md):
+//  - Scenarios: Silesia corpus (real-world mix, ~212 MB), synthetic 16 MB
+//    (small-file case), incompressible 32 MB (random).
+//  - Median of N timed runs (3 for large inputs, 5 for small), after warmup.
+//  - Compression: every implementation runs its own defaults at 1 thread and
+//    at ProcessorCount threads; xz additionally runs -T N --block-size=1MiB on
+//    the 16 MB scenario, where its 24 MiB default block leaves nothing to
+//    parallelize.
+//  - Decompression: cross-decode — all decoders decode the SAME reference
+//    files (one single-block, one multi-block, both produced by the xz CLI),
+//    so the decode column measures decoder speed, not encoder output shape.
+//  - Decoded output is verified against the original once per configuration.
+//  - Not measured: peak memory (block-parallel modes hold up to N blocks in
+//    flight). The xz CLI numbers include process spawn and pipe overhead.
+
 using System.Diagnostics;
+using System.IO.Compression;
 using LzmaNet;
-using ZCS.XZ;
 
-const int DataSize = 16 * 1024 * 1024; // 16 MB
 const int Preset = 6;
+int mt = Environment.ProcessorCount;
 
-// Generate test data: mix of compressible patterns and random bytes
-Console.WriteLine($"Generating {DataSize / (1024 * 1024)} MB test data...");
+// ── Test data ───────────────────────────────────────────────────────
+
+string cacheDir = Path.Combine(Path.GetTempPath(), "lzmanet-bench");
+Directory.CreateDirectory(cacheDir);
+
+byte[]? silesia = LoadSilesia(cacheDir);
+
+byte[] mixed16 = new byte[16 * 1024 * 1024];
 var rng = new Random(42);
-byte[] original = new byte[DataSize];
-for (int i = 0; i < original.Length; i++)
-    original[i] = (byte)(i % 256 < 200 ? i % 37 : rng.Next(256));
+for (int i = 0; i < mixed16.Length; i++)
+    mixed16[i] = (byte)(i % 256 < 200 ? i % 37 : rng.Next(256));
 
-// Sanity check
-Console.WriteLine("Sanity checking large round-trip...");
+byte[] random32 = new byte[32 * 1024 * 1024];
+new Random(1234).NextBytes(random32);
+
+// ── xz CLI detection ────────────────────────────────────────────────
+
+string? xzPath = DetectXz();
+Console.WriteLine($"xz CLI: {xzPath ?? "NOT FOUND (native comparison skipped)"}");
+Console.WriteLine($"Threads (MT runs): {mt}");
+Console.WriteLine();
+
+// Warmup (JIT) for the in-process implementation
+_ = XzCompressor.Decompress(XzCompressor.Compress(mixed16.AsSpan(0, 65536)));
+
+// ── Scenarios ───────────────────────────────────────────────────────
+
+var scenarios = new List<(string Name, byte[]? Data, int Runs, bool XzBlockMatchedRow)>
 {
-    byte[] c = XzCompressor.Compress(original);
-    byte[] d = XzCompressor.Decompress(c);
-    if (!original.AsSpan().SequenceEqual(d))
+    ("Silesia corpus (211.9 MB, real-world mix)", silesia, 3, false),
+    ("Synthetic 16 MB (patterns + random)", mixed16, 5, true),
+    ("Incompressible 32 MB (random)", random32, 3, false),
+};
+
+foreach (var (name, data, runs, xzBlockMatchedRow) in scenarios)
+{
+    if (data == null)
     {
-        Console.WriteLine("  FAILED: round-trip mismatch!");
+        Console.WriteLine($"### {name}: SKIPPED (data unavailable)");
+        continue;
+    }
+    RunScenario(name, data, runs, xzBlockMatchedRow);
+}
+
+return;
+
+// ── Scenario driver ─────────────────────────────────────────────────
+
+void RunScenario(string name, byte[] data, int runs, bool xzBlockMatchedRow)
+{
+    double mb = data.Length / (1024.0 * 1024.0);
+    Console.WriteLine("═══════════════════════════════════════════════════════════════════");
+    Console.WriteLine($"  {name} — median of {runs} runs");
+    Console.WriteLine("═══════════════════════════════════════════════════════════════════");
+
+    // ---- Compression (each implementation with its own defaults) ----
+    Console.WriteLine();
+    Console.WriteLine("  COMPRESSION");
+    Console.WriteLine("  | Implementation | Config | MB/s | Ratio | Size |");
+    Console.WriteLine("  |---|---|---:|---:|---:|");
+
+    foreach (int threads in new[] { 1, mt })
+    {
+        var opts = new XzCompressOptions { Preset = Preset, Threads = threads };
+        long size = 0;
+        double s = MedianSeconds(runs, () => { size = XzCompressor.Compress(data, opts).Length; });
+        PrintComp("LzmaNet", $"{threads}T defaults", mb / s, size, data.Length);
+    }
+
+    if (xzBlockMatchedRow)
+    {
+        // Small inputs fit in one default-size block for BOTH implementations,
+        // so show the matched small-block MT row for each of them.
+        var opts = new XzCompressOptions { Preset = Preset, Threads = mt, BlockSize = 1 << 20 };
+        long size = 0;
+        double s = MedianSeconds(runs, () => { size = XzCompressor.Compress(data, opts).Length; });
+        PrintComp("LzmaNet", $"{mt}T BlockSize=1MiB", mb / s, size, data.Length);
+    }
+
+    string? inputFile = null;
+    if (xzPath != null)
+    {
+        inputFile = Path.Combine(cacheDir, "bench-input.bin");
+        File.WriteAllBytes(inputFile, data);
+
+        foreach (var (args, label) in XzCompressConfigs(xzBlockMatchedRow))
+        {
+            string outFile = inputFile + ".xz";
+            long size = 0;
+            double s = MedianSeconds(runs, () =>
+            {
+                File.Delete(outFile);
+                RunProcess(xzPath, $"{args} -k -q \"{inputFile}\"");
+                size = new FileInfo(outFile).Length;
+            });
+            PrintComp("xz CLI", label, mb / s, size, data.Length);
+            File.Delete(outFile);
+        }
+    }
+
+    // ---- Decompression (cross-decode shared reference files) ----
+    if (xzPath == null)
+    {
+        Console.WriteLine("  (decompression cross-decode skipped: reference files need the xz CLI)");
+        Console.WriteLine();
         return;
     }
-    Console.WriteLine($"  OK ({c.Length:N0} bytes compressed, {(double)c.Length / original.Length * 100:F1}%)");
-}
-Console.WriteLine();
 
-// Detect xz
-string? xzPath = null;
-try
-{
-    var p = Process.Start(new ProcessStartInfo("xz", "--version")
-    {
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-        UseShellExecute = false,
-        CreateNoWindow = true
-    });
-    p?.WaitForExit();
-    if (p?.ExitCode == 0)
-        xzPath = "xz";
-}
-catch { }
+    // Reference files produced by the NATIVE encoder so no decoder gets
+    // home-field advantage.
+    string refSingle = inputFile + ".single.xz";
+    string refMulti = inputFile + ".multi.xz";
+    File.Delete(inputFile + ".xz");
+    RunProcess(xzPath, $"-{Preset} -q -k \"{inputFile}\"");
+    File.Move(inputFile + ".xz", refSingle, overwrite: true);
+    RunProcess(xzPath, $"-{Preset} -q -T {mt} --block-size=1MiB -k \"{inputFile}\"");
+    File.Move(inputFile + ".xz", refMulti, overwrite: true);
 
-if (xzPath == null)
-{
-    // Try common paths
-    foreach (var path in new[] { "/usr/bin/xz", "/usr/local/bin/xz" })
-    {
-        if (File.Exists(path)) { xzPath = path; break; }
-    }
-}
+    byte[] refSingleBytes = File.ReadAllBytes(refSingle);
+    byte[] refMultiBytes = File.ReadAllBytes(refMulti);
 
-Console.WriteLine($"xz CLI: {xzPath ?? "NOT FOUND"}");
-Console.WriteLine();
-
-int[] threadCounts = [1, Environment.ProcessorCount];
-if (threadCounts[1] == 1)
-    threadCounts = [1]; // avoid duplicate
-
-// ── LzmaNet benchmarks ──────────────────────────────────────────────
-Console.WriteLine("═══════════════════════════════════════════════════════");
-Console.WriteLine("  LzmaNet (pure C#)");
-Console.WriteLine("═══════════════════════════════════════════════════════");
-
-var lzmaNetResults = new List<(int threads, long compressMs, long decompressMs, int compressedSize)>();
-
-foreach (int threads in threadCounts)
-{
-    var opts = new XzCompressOptions { Preset = Preset, Threads = threads };
-    // Use smaller block size for MT to create enough blocks for parallelism
-    if (threads > 1)
-        opts.BlockSize = 1 << 20; // 1 MB blocks → 16 blocks for 16 MB data
-
-    // Warmup
-    _ = XzCompressor.Compress(original.AsSpan(0, 4096), opts);
-
-    // Compress
-    var sw = Stopwatch.StartNew();
-    byte[] compressed = XzCompressor.Compress(original, opts);
-    sw.Stop();
-    long compressMs = sw.ElapsedMilliseconds;
-
-    // Decompress (parallel block decode when threads > 1; the MT-compressed
-    // stream contains multiple blocks, which is what parallel decode needs)
-    sw.Restart();
-    byte[] decompressed = XzCompressor.Decompress(compressed, threads);
-    sw.Stop();
-    long decompressMs = sw.ElapsedMilliseconds;
-
-    if (!original.AsSpan().SequenceEqual(decompressed))
-        throw new Exception("Round-trip verification failed!");
-
-    double ratio = (double)compressed.Length / original.Length * 100;
-    double compMBps = (double)original.Length / (1024 * 1024) / (compressMs / 1000.0);
-    double decMBps = (double)original.Length / (1024 * 1024) / (decompressMs / 1000.0);
-
-    Console.WriteLine($"  Threads: {threads,-4}  Compress: {compressMs,6} ms ({compMBps,6:F1} MB/s)  " +
-                      $"Decompress: {decompressMs,5} ms ({decMBps,6:F1} MB/s)  " +
-                      $"Ratio: {ratio:F1}%  Size: {compressed.Length:N0}");
-
-    lzmaNetResults.Add((threads, compressMs, decompressMs, compressed.Length));
-}
-
-// ── ZCS.XZ (liblzma P/Invoke) benchmarks ─────────────────────────────
-Console.WriteLine();
-Console.WriteLine("═══════════════════════════════════════════════════════");
-Console.WriteLine("  ZCS.XZ (liblzma via P/Invoke)");
-Console.WriteLine("═══════════════════════════════════════════════════════");
-
-foreach (int threads in threadCounts)
-{
-    var zcsOpts = new XZCompressOptions
-    {
-        Level = (XZCompressionLevel)Preset,
-        Threads = threads,
-    };
-
-    // Warmup
-    {
-        using var warmMs = new MemoryStream();
-        using (var warmXz = new XZCompressStream(warmMs, zcsOpts, leaveOpen: true))
-            warmXz.Write(original.AsSpan(0, 4096));
-    }
-
-    // Compress
-    byte[] zcsCompressed;
-    var sw2 = Stopwatch.StartNew();
-    {
-        using var outMs = new MemoryStream();
-        using (var xzStream = new XZCompressStream(outMs, zcsOpts, leaveOpen: true))
-            xzStream.Write(original);
-        zcsCompressed = outMs.ToArray();
-    }
-    sw2.Stop();
-    long zcsCompressMs = sw2.ElapsedMilliseconds;
-
-    // Decompress
-    sw2.Restart();
-    byte[] zcsDecompressed;
-    {
-        using var inMs = new MemoryStream(zcsCompressed);
-        using var xzStream = new XZDecompressStream(inMs, leaveOpen: true);
-        using var outMs = new MemoryStream();
-        xzStream.CopyTo(outMs);
-        zcsDecompressed = outMs.ToArray();
-    }
-    sw2.Stop();
-    long zcsDecompressMs = sw2.ElapsedMilliseconds;
-
-    if (!original.AsSpan().SequenceEqual(zcsDecompressed))
-        throw new Exception("ZCS.XZ round-trip verification failed!");
-
-    double zcsRatio = (double)zcsCompressed.Length / original.Length * 100;
-    double zcsCompMBps = (double)original.Length / (1024 * 1024) / (zcsCompressMs / 1000.0);
-    double zcsDecMBps = (double)original.Length / (1024 * 1024) / (zcsDecompressMs / 1000.0);
-
-    Console.WriteLine($"  Threads: {threads,-4}  Compress: {zcsCompressMs,6} ms ({zcsCompMBps,6:F1} MB/s)  " +
-                      $"Decompress: {zcsDecompressMs,5} ms ({zcsDecMBps,6:F1} MB/s)  " +
-                      $"Ratio: {zcsRatio:F1}%  Size: {zcsCompressed.Length:N0}");
-}
-
-// ── xz CLI benchmarks ────────────────────────────────────────────────
-if (xzPath != null)
-{
     Console.WriteLine();
-    Console.WriteLine("═══════════════════════════════════════════════════════");
-    Console.WriteLine($"  xz CLI ({xzPath})");
-    Console.WriteLine("═══════════════════════════════════════════════════════");
+    Console.WriteLine($"  DECOMPRESSION — shared references: single-block ({refSingleBytes.Length:N0} B), " +
+                      $"multi-block 1MiB ({refMultiBytes.Length:N0} B), both produced by xz");
+    Console.WriteLine("  | Implementation | Config | Single-block MB/s | Multi-block MB/s |");
+    Console.WriteLine("  |---|---|---:|---:|");
 
-    string tmpInput = Path.GetTempFileName();
-    File.WriteAllBytes(tmpInput, original);
-
-    foreach (int threads in threadCounts)
+    foreach (int threads in new[] { 1, mt })
     {
-        string tmpCompressed = tmpInput + ".xz";
+        Verify(XzCompressor.Decompress(refSingleBytes, threads), data, $"LzmaNet {threads}T single");
+        Verify(XzCompressor.Decompress(refMultiBytes, threads), data, $"LzmaNet {threads}T multi");
+        double sSingle = MedianSeconds(runs, () => DrainLzmaNet(refSingleBytes, threads));
+        double sMulti = MedianSeconds(runs, () => DrainLzmaNet(refMultiBytes, threads));
+        Console.WriteLine($"  | LzmaNet | {threads}T | {mb / sSingle,8:F1} | {mb / sMulti,8:F1} |");
+    }
 
-        // Compress. Match LzmaNet's MT block layout: without an explicit block
-        // size, xz -T uses 3x-dictionary blocks (24 MiB at preset 6), so 16 MB
-        // of input stays a single block and gets no parallelism at all.
-        string blockSizeArg = threads > 1 ? "--block-size=1MiB " : "";
-        if (File.Exists(tmpCompressed)) File.Delete(tmpCompressed);
+    foreach (int threads in new[] { 1, mt })
+    {
+        Verify(DecodeXzCli(xzPath, refSingle, threads), data, $"xz {threads}T single");
+        Verify(DecodeXzCli(xzPath, refMulti, threads), data, $"xz {threads}T multi");
+        double sSingle = MedianSeconds(runs, () => DrainXzCli(xzPath, refSingle, threads));
+        double sMulti = MedianSeconds(runs, () => DrainXzCli(xzPath, refMulti, threads));
+        Console.WriteLine($"  | xz CLI | {threads}T | {mb / sSingle,8:F1} | {mb / sMulti,8:F1} |");
+    }
+
+    File.Delete(refSingle);
+    File.Delete(refMulti);
+    File.Delete(inputFile);
+    Console.WriteLine();
+}
+
+IEnumerable<(string Args, string Label)> XzCompressConfigs(bool blockMatchedRow)
+{
+    yield return ($"-{Preset} -T 1", "1T defaults");
+    yield return ($"-{Preset} -T {mt}", $"{mt}T defaults");
+    if (blockMatchedRow)
+        yield return ($"-{Preset} -T {mt} --block-size=1MiB", $"{mt}T --block-size=1MiB");
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+static void PrintComp(string impl, string config, double mbps, long size, long originalLength)
+{
+    Console.WriteLine($"  | {impl} | {config} | {mbps,8:F1} | {(double)size / originalLength * 100,5:F1}% | {size:N0} |");
+}
+
+static double MedianSeconds(int runs, Action action)
+{
+    var times = new double[runs];
+    for (int i = 0; i < runs; i++)
+    {
         var sw = Stopwatch.StartNew();
-        var pCompress = Process.Start(new ProcessStartInfo(xzPath,
-            $"-{Preset} -T {threads} {blockSizeArg}-k \"{tmpInput}\"")
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardError = true,
-        });
-        pCompress!.WaitForExit();
+        action();
         sw.Stop();
-        long compressMs = sw.ElapsedMilliseconds;
+        times[i] = sw.Elapsed.TotalSeconds;
+    }
+    Array.Sort(times);
+    return times[runs / 2];
+}
 
-        if (pCompress.ExitCode != 0)
+static void Verify(byte[] decoded, byte[] original, string what)
+{
+    if (!decoded.AsSpan().SequenceEqual(original))
+        throw new Exception($"VERIFICATION FAILED: {what}");
+}
+
+static void DrainLzmaNet(byte[] compressed, int threads)
+{
+    using var input = new MemoryStream(compressed, 0, compressed.Length, false, publiclyVisible: true);
+    using var xz = new XzDecompressStream(input, threads, leaveOpen: true);
+    xz.CopyTo(Stream.Null);
+}
+
+static byte[] DecodeXzCli(string xzPath, string file, int threads)
+{
+    var p = Process.Start(new ProcessStartInfo(xzPath, $"-d -T {threads} -q -k -c \"{file}\"")
+    {
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        RedirectStandardOutput = true,
+    })!;
+    using var output = new MemoryStream();
+    p.StandardOutput.BaseStream.CopyTo(output);
+    p.WaitForExit();
+    if (p.ExitCode != 0) throw new Exception($"xz decode failed (exit {p.ExitCode})");
+    return output.ToArray();
+}
+
+static void DrainXzCli(string xzPath, string file, int threads)
+{
+    var p = Process.Start(new ProcessStartInfo(xzPath, $"-d -T {threads} -q -k -c \"{file}\"")
+    {
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        RedirectStandardOutput = true,
+    })!;
+    p.StandardOutput.BaseStream.CopyTo(Stream.Null);
+    p.WaitForExit();
+    if (p.ExitCode != 0) throw new Exception($"xz decode failed (exit {p.ExitCode})");
+}
+
+static void RunProcess(string path, string args)
+{
+    var p = Process.Start(new ProcessStartInfo(path, args)
+    {
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        RedirectStandardError = true,
+    })!;
+    p.WaitForExit();
+    if (p.ExitCode != 0)
+        throw new Exception($"{path} {args} failed (exit {p.ExitCode}): {p.StandardError.ReadToEnd()}");
+}
+
+static string? DetectXz()
+{
+    try
+    {
+        var p = Process.Start(new ProcessStartInfo("xz", "--version")
         {
-            Console.WriteLine($"  xz compress failed (exit {pCompress.ExitCode}): {pCompress.StandardError.ReadToEnd()}");
-            continue;
-        }
-
-        long compressedSize = new FileInfo(tmpCompressed).Length;
-
-        // Decompress
-        string tmpDecompressed = Path.GetTempFileName();
-        sw.Restart();
-        var pDecompress = Process.Start(new ProcessStartInfo(xzPath,
-            $"-d -T {threads} -k -c \"{tmpCompressed}\"")
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
         });
-        using (var outFile = File.Create(tmpDecompressed))
-        {
-            pDecompress!.StandardOutput.BaseStream.CopyTo(outFile);
-        }
-        pDecompress!.WaitForExit();
-        sw.Stop();
-        long decompressMs = sw.ElapsedMilliseconds;
-
-        double ratio = (double)compressedSize / original.Length * 100;
-        double compMBps = (double)original.Length / (1024 * 1024) / (compressMs / 1000.0);
-        double decMBps = (double)original.Length / (1024 * 1024) / (decompressMs / 1000.0);
-
-        Console.WriteLine($"  Threads: {threads,-4}  Compress: {compressMs,6} ms ({compMBps,6:F1} MB/s)  " +
-                          $"Decompress: {decompressMs,5} ms ({decMBps,6:F1} MB/s)  " +
-                          $"Ratio: {ratio:F1}%  Size: {compressedSize:N0}");
-
-        // Cleanup
-        File.Delete(tmpCompressed);
-        File.Delete(tmpDecompressed);
+        p?.WaitForExit();
+        if (p?.ExitCode == 0) return "xz";
     }
+    catch { }
 
-    File.Delete(tmpInput);
-
-    // ── Comparison ────────────────────────────────────────────────────
-    Console.WriteLine();
-    Console.WriteLine("═══════════════════════════════════════════════════════");
-    Console.WriteLine("  Note: xz CLI and ZCS.XZ use the native C liblzma.");
-    Console.WriteLine("  LzmaNet is pure managed C# — no native dependencies.");
-    Console.WriteLine("═══════════════════════════════════════════════════════");
+    foreach (var path in new[] { "/usr/bin/xz", "/usr/local/bin/xz" })
+        if (File.Exists(path)) return path;
+    return null;
 }
-else
+
+static byte[]? LoadSilesia(string cacheDir)
 {
-    Console.WriteLine();
-    Console.WriteLine("  (xz CLI not found — skipping comparison)");
+    string binPath = Path.Combine(cacheDir, "silesia.bin");
+    if (File.Exists(binPath))
+        return File.ReadAllBytes(binPath);
+
+    string zipPath = Path.Combine(cacheDir, "silesia.zip");
+    try
+    {
+        if (!File.Exists(zipPath))
+        {
+            Console.WriteLine("Downloading Silesia corpus (~68 MB)...");
+            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
+            byte[] zip = http.GetByteArrayAsync("https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip")
+                .GetAwaiter().GetResult();
+            File.WriteAllBytes(zipPath, zip);
+        }
+
+        // Concatenate the corpus files in deterministic (sorted) order.
+        using var archive = ZipFile.OpenRead(zipPath);
+        using var output = new MemoryStream();
+        foreach (var entry in archive.Entries.OrderBy(e => e.FullName, StringComparer.Ordinal))
+        {
+            if (entry.Length == 0) continue;
+            using var s = entry.Open();
+            s.CopyTo(output);
+        }
+        byte[] data = output.ToArray();
+        File.WriteAllBytes(binPath, data);
+        return data;
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Silesia corpus unavailable ({ex.Message}) — scenario will be skipped.");
+        return null;
+    }
 }

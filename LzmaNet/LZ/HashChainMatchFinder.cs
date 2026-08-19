@@ -19,6 +19,7 @@ internal sealed class HashChainMatchFinder : IDisposable
     private const int kHash3Size = 1 << 16;
     private const int kFixHashSize = kHash2Size + kHash3Size;
 
+    private readonly int _windowSize;
     private readonly int _cyclicBufferSize;
     private readonly int _cyclicMask;
     private readonly int _hashMask;
@@ -51,8 +52,14 @@ internal sealed class HashChainMatchFinder : IDisposable
 
     public HashChainMatchFinder(int dictSize, int matchMaxLen, int cutValue)
     {
-        // Round up to a power of two so chain slots can be computed with a mask.
-        _cyclicBufferSize = (int)BitOperations.RoundUpToPowerOf2((uint)Math.Max(dictSize, 2));
+        // The true match window (max look-back distance). Distances must stay
+        // below this so they remain valid for the dictionary size declared in
+        // the XZ block header.
+        _windowSize = Math.Max(dictSize, 2);
+
+        // Chain slot count rounded up to a power of two so slots can be
+        // computed with a mask instead of an integer modulo.
+        _cyclicBufferSize = (int)BitOperations.RoundUpToPowerOf2((uint)_windowSize);
         _cyclicMask = _cyclicBufferSize - 1;
         _matchMaxLen = matchMaxLen;
         _cutValue = cutValue;
@@ -67,11 +74,11 @@ internal sealed class HashChainMatchFinder : IDisposable
         _chain = ArrayPool<int>.Shared.Rent(_cyclicBufferSize);
         Array.Fill(_chain, -1, 0, _cyclicBufferSize);
 
-        // Buffer must hold: cyclicBufferSize (lookback) + max chunk size + matchMaxLen
-        // LZMA2 chunk size is capped at 64 KB to fit the 16-bit compressed size field.
-        // Use a generous estimate to handle any chunk size passed via SetInput.
-        int maxChunkSize = Math.Min(1 << 21, dictSize * 2);
-        _bufferSize = dictSize + maxChunkSize + matchMaxLen + 4096;
+        // Sized so the buffer only slides after at least one full cyclic-size
+        // span has accumulated behind the window; slides then move by a
+        // multiple of the cyclic size, which keeps chain slot mapping valid
+        // (slot(p - k*cyclic) == slot(p)).
+        _bufferSize = _windowSize + _cyclicBufferSize + (1 << 16) + matchMaxLen + 4096;
         _buffer = ArrayPool<byte>.Shared.Rent(_bufferSize);
         _pos = 0;
         _streamPos = 0;
@@ -79,17 +86,61 @@ internal sealed class HashChainMatchFinder : IDisposable
 
     public void SetInput(ReadOnlySpan<byte> data)
     {
-        if (_pos > _bufferSize - data.Length - _matchMaxLen)
-        {
-            int moveFrom = _pos - _cyclicBufferSize;
-            if (moveFrom < 0) moveFrom = 0;
-            int moveSize = _streamPos - moveFrom;
-            Buffer.BlockCopy(_buffer, moveFrom, _buffer, 0, moveSize);
-            _pos -= moveFrom;
-            _streamPos -= moveFrom;
-        }
+        EnsureCapacity(data.Length);
         data.CopyTo(_buffer.AsSpan(_streamPos));
         _streamPos += data.Length;
+    }
+
+    private void EnsureCapacity(int incoming)
+    {
+        if (_streamPos <= _bufferSize - incoming - _matchMaxLen)
+            return;
+
+        // Slide the window down by a multiple of the cyclic size so existing
+        // hash/chain entries stay slot-consistent after rebasing.
+        int keepFrom = _pos - _windowSize;
+        if (keepFrom > 0)
+        {
+            int delta = keepFrom & ~_cyclicMask; // round down to cyclic multiple
+            if (delta > 0)
+            {
+                Buffer.BlockCopy(_buffer, delta, _buffer, 0, _streamPos - delta);
+                _pos -= delta;
+                _streamPos -= delta;
+                RebaseTables(delta);
+            }
+        }
+
+        if (_streamPos > _bufferSize - incoming - _matchMaxLen)
+        {
+            // Input larger than the buffer (direct one-shot encodes) — grow.
+            int newSize = Math.Max(_streamPos + incoming + _matchMaxLen + 4096, _bufferSize * 2);
+            byte[] bigger = ArrayPool<byte>.Shared.Rent(newSize);
+            Buffer.BlockCopy(_buffer, 0, bigger, 0, _streamPos);
+            ArrayPool<byte>.Shared.Return(_buffer);
+            _buffer = bigger;
+            _bufferSize = newSize;
+        }
+    }
+
+    /// <summary>
+    /// Shifts all stored positions down by <paramref name="delta"/> after a buffer
+    /// slide. <paramref name="delta"/> is a multiple of the cyclic size, so chain
+    /// slot indices are unaffected.
+    /// </summary>
+    private void RebaseTables(int delta)
+    {
+        int hashSize = kFixHashSize + _hashMask + 1;
+        for (int i = 0; i < hashSize; i++)
+        {
+            int v = _hash[i];
+            if (v >= 0) _hash[i] = v >= delta ? v - delta : -1;
+        }
+        for (int i = 0; i < _cyclicBufferSize; i++)
+        {
+            int v = _chain[i];
+            if (v >= 0) _chain[i] = v >= delta ? v - delta : -1;
+        }
     }
 
     /// <summary>
@@ -152,7 +203,7 @@ internal sealed class HashChainMatchFinder : IDisposable
             _hashUpdatedAtPos = true;
 
             // Check 2-byte hash match
-            if (pos2 >= 0 && pos2 >= _pos - _cyclicBufferSize
+            if (pos2 >= 0 && pos2 >= _pos - _windowSize
                 && buffer[pos2] == buffer[cur] && buffer[pos2 + 1] == buffer[cur + 1])
             {
                 if (matchCount < maxMatches)
@@ -164,7 +215,7 @@ internal sealed class HashChainMatchFinder : IDisposable
             }
 
             // Check 3-byte hash match
-            if (pos3 >= 0 && pos3 >= _pos - _cyclicBufferSize && pos3 != pos2
+            if (pos3 >= 0 && pos3 >= _pos - _windowSize && pos3 != pos2
                 && buffer[pos3] == buffer[cur] && buffer[pos3 + 1] == buffer[cur + 1]
                 && buffer[pos3 + 2] == buffer[cur + 2])
             {
@@ -185,7 +236,7 @@ internal sealed class HashChainMatchFinder : IDisposable
             int bestLen = matchCount > 0 ? lengths[matchCount - 1] : 1;
             int count = _cutValue;
 
-            while (curMatch >= 0 && curMatch >= _pos - _cyclicBufferSize && count-- > 0)
+            while (curMatch >= 0 && curMatch >= _pos - _windowSize && count-- > 0)
             {
                 if (buffer[curMatch + bestLen] == buffer[cur + bestLen])
                 {
