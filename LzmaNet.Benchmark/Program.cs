@@ -22,6 +22,13 @@ using LzmaNet;
 const int Preset = 6;
 int mt = Environment.ProcessorCount;
 
+// "crc" argument: micro-benchmark the checksum implementations and exit.
+if (args.Length > 0 && args[0] == "crc")
+{
+    RunCrcMicroBenchmark();
+    return;
+}
+
 // ── Test data ───────────────────────────────────────────────────────
 
 string cacheDir = Path.Combine(Path.GetTempPath(), "lzmanet-bench");
@@ -123,7 +130,9 @@ void RunScenario(string name, byte[] data, int runs, bool xzBlockMatchedRow)
     }
 
     // ---- Decompression (cross-decode shared reference files) ----
-    if (xzPath == null)
+    // inputFile is non-null exactly when xzPath is; checking both satisfies
+    // nullable flow analysis.
+    if (xzPath == null || inputFile == null)
     {
         Console.WriteLine("  (decompression cross-decode skipped: reference files need the xz CLI)");
         Console.WriteLine();
@@ -179,6 +188,35 @@ IEnumerable<(string Args, string Label)> XzCompressConfigs(bool blockMatchedRow)
     yield return ($"-{Preset} -T {mt}", $"{mt}T defaults");
     if (blockMatchedRow)
         yield return ($"-{Preset} -T {mt} --block-size=1MiB", $"{mt}T --block-size=1MiB");
+}
+
+static void RunCrcMicroBenchmark()
+{
+    const int Size = 256 * 1024 * 1024;
+    byte[] data = new byte[Size];
+    new Random(42).NextBytes(data);
+    double gb = Size / (1024.0 * 1024.0 * 1024.0);
+
+    // Warmup
+    _ = LzmaNet.Check.Crc32.Compute(data.AsSpan(0, 1 << 20));
+    _ = LzmaNet.Check.Crc32.ComputeScalar(data.AsSpan(0, 1 << 20));
+    _ = LzmaNet.Check.Crc64.Compute(data.AsSpan(0, 1 << 20));
+    _ = LzmaNet.Check.Crc64.ComputeScalar(data.AsSpan(0, 1 << 20));
+
+    Console.WriteLine($"CRC micro-benchmark over {Size / (1024 * 1024)} MB (median of 5):");
+    Report("CRC32 table (slicing-by-8)", gb, MedianSeconds(5, () => _ = LzmaNet.Check.Crc32.ComputeScalar(data)));
+    Report("CRC32 vector (clmul fold)  ", gb, MedianSeconds(5, () => _ = LzmaNet.Check.Crc32.Compute(data)));
+    Report("CRC64 table (slicing-by-8)", gb, MedianSeconds(5, () => _ = LzmaNet.Check.Crc64.ComputeScalar(data)));
+    Report("CRC64 vector (clmul fold)  ", gb, MedianSeconds(5, () => _ = LzmaNet.Check.Crc64.Compute(data)));
+
+    // Consistency spot-check
+    if (LzmaNet.Check.Crc64.Compute(data) != LzmaNet.Check.Crc64.ComputeScalar(data)
+        || LzmaNet.Check.Crc32.Compute(data) != LzmaNet.Check.Crc32.ComputeScalar(data))
+        throw new Exception("CRC mismatch between vector and scalar paths!");
+    Console.WriteLine("Vector/scalar results verified identical.");
+
+    static void Report(string name, double gb, double seconds)
+        => Console.WriteLine($"  {name}: {gb / seconds,7:F2} GB/s");
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
