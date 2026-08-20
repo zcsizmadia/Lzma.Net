@@ -9,8 +9,15 @@ namespace LzmaNet.Tests;
 /// Tests for the BT4 match finder + optimal parser (presets 7-9), the legacy
 /// .lzma format, and progress reporting.
 /// </summary>
+[NotInParallel(nameof(OptimalAndFormatTests))]
 public class OptimalAndFormatTests
 {
+    // CI runners (Linux: ~14 GB, no swap) get OOM-killed if several BT4
+    // encoders with preset-default dictionaries (up to 64 MB dict = ~650 MB of
+    // tables each) run in parallel. Test data is at most a few MB, so a 4 MB
+    // dictionary exercises the identical code paths at a fraction of the memory.
+    private const int TestDictSize = 1 << 22;
+
     /// <summary>
     /// Text-like data with matches at many distances — the pattern class that
     /// exposed the BT4 chunk-boundary tree-corruption bug.
@@ -44,7 +51,7 @@ public class OptimalAndFormatTests
         // 4 MB of text-like data spans many LZMA2 chunk boundaries — the exact
         // regression scenario for the BT4 lenLimit/tree-adoption bug.
         byte[] original = MakeTextLikeData(4 * 1024 * 1024);
-        byte[] compressed = XzCompressor.Compress(original, new XzCompressOptions { Preset = preset });
+        byte[] compressed = XzCompressor.Compress(original, new XzCompressOptions { Preset = preset, DictionarySize = TestDictSize });
         byte[] decompressed = XzCompressor.Decompress(compressed);
         await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
     }
@@ -57,7 +64,7 @@ public class OptimalAndFormatTests
         for (int i = 0; i < original.Length; i++)
             original[i] = (byte)(i % 256 < 200 ? i % 37 + i / 65536 : rng.Next(256));
 
-        byte[] compressed = XzCompressor.Compress(original, new XzCompressOptions { Preset = 9 });
+        byte[] compressed = XzCompressor.Compress(original, new XzCompressOptions { Preset = 9, DictionarySize = TestDictSize });
         await Assert.That(XzCompressor.Decompress(compressed).SequenceEqual(original)).IsTrue();
     }
 
@@ -67,9 +74,11 @@ public class OptimalAndFormatTests
         byte[] original = MakeTextLikeData(2 * 1024 * 1024);
 
         var lazyProps = LzmaEncoderProperties.FromPreset(9);
+        lazyProps.DictionarySize = TestDictSize;
         lazyProps.UseBinaryTree = false;
         lazyProps.OptimalParse = false;
         var optProps = LzmaEncoderProperties.FromPreset(9);
+        optProps.DictionarySize = TestDictSize;
 
         long lazySize = EncodeLzma2(original, lazyProps);
         long optSize = EncodeLzma2(original, optProps);
@@ -83,6 +92,7 @@ public class OptimalAndFormatTests
         foreach ((bool bt, bool opt) in new[] { (true, false), (false, true), (true, true) })
         {
             var props = LzmaEncoderProperties.FromPreset(7);
+            props.DictionarySize = TestDictSize;
             props.UseBinaryTree = bt;
             props.OptimalParse = opt;
 
@@ -102,8 +112,8 @@ public class OptimalAndFormatTests
     public async Task OptimalPreset_MultiThreaded_MatchesSingleThreaded()
     {
         byte[] original = MakeTextLikeData(2 * 1024 * 1024, seed: 9);
-        var mt = new XzCompressOptions { Preset = 7, Threads = 4, BlockSize = 256 * 1024 };
-        var st = new XzCompressOptions { Preset = 7, Threads = 1, BlockSize = 256 * 1024 };
+        var mt = new XzCompressOptions { Preset = 7, Threads = 4, BlockSize = 256 * 1024, DictionarySize = TestDictSize };
+        var st = new XzCompressOptions { Preset = 7, Threads = 1, BlockSize = 256 * 1024, DictionarySize = TestDictSize };
 
         byte[] a = XzCompressor.Compress(original, mt);
         byte[] b = XzCompressor.Compress(original, st);
