@@ -70,6 +70,8 @@ This is a core design principle. Always prefer:
 - The `Lzma2Encoder` carries the dictionary ACROSS chunks within a block (first chunk 0xE0, continuation chunks 0x80, state reset 0xA0/0xC0 after stored-uncompressed chunks). `LzmaEncoder.ResetState()` and `ResetDictionary()` are separate on purpose — dictionary resets happen once per XZ block, state resets whenever LZMA2 requires them
 - The match finder's window is the full dictionary; its buffer slides by multiples of the power-of-two cyclic size and rebases the hash/chain tables so slot mapping stays valid — don't change the slide granularity without revisiting that invariant
 - `LzmaEncoder.EncodeChunk` aborts (returns -1) when a chunk is expanding; the caller stores it uncompressed and must reset state before the next chunk (LZMA2 requires this anyway)
+- The encoder uses lazy one-step match lookahead below `LzmaEncoderProperties.NiceLength` (presets ≤ 2 are greedy). The lookahead relies on a strict invariant: the match finder sits at `pos` with its hash inserted whenever a pending candidate carries over — see the comment in `EncodeChunk`
+- `XzDecompressOptions.MaxOutputSize` must be enforced BEFORE output allocation (decompression-bomb protection); the checks live in `XzBlock` where claimed sizes are first known
 
 ### Testing
 - **TUnit** — the test project requires `<OutputType>Exe</OutputType>` and `<IsTestProject>true</IsTestProject>`
@@ -87,7 +89,7 @@ The filters in `src/LzmaNet/Filters/` are ported from liblzma C source. When mod
 - `FilterFactory` creates filter instances by filter ID
 
 ### Public API Surface
-- Public types: `XzCompressor`, `XzCompressStream`, `XzDecompressStream`, `XzCompressOptions`, `XzCheckType`, `LzmaException`, `LzmaDataErrorException`, `LzmaFormatException`
+- Public types: `XzCompressor`, `XzCompressStream`, `XzDecompressStream`, `XzSeekableStream`, `XzCompressOptions`, `XzDecompressOptions`, `XzCheckType`, `XzFilterType`, `LzmaException`, `LzmaDataErrorException`, `LzmaFormatException`, `LzmaMemoryLimitException`
 - Everything else is `internal`
 - XML documentation is generated (`GenerateDocumentationFile`)
 - Async variants use `ReadOnlyMemory<byte>` instead of `ReadOnlySpan<byte>` (spans cannot cross `await` boundaries)

@@ -43,10 +43,14 @@ internal static class XzBlock
 
     /// <summary>
     /// Reads and decodes a block, transferring ownership of a pooled output buffer to the caller.
+    /// <paramref name="maxOutputSize"/> caps the block's claimed uncompressed size;
+    /// exceeding it throws <see cref="LzmaMemoryLimitException"/> BEFORE any large
+    /// allocation happens (decompression-bomb protection).
     /// </summary>
     internal static bool ReadBlockToBuffer(Stream stream, int checkType,
         out byte[]? outputBuffer, out int outputLength,
-        out long unpaddedSize, out long uncompressedSize)
+        out long unpaddedSize, out long uncompressedSize,
+        long maxOutputSize = long.MaxValue)
     {
         outputBuffer = null;
         outputLength = 0;
@@ -180,7 +184,7 @@ internal static class XzBlock
                 compDataSize = ReadCompressedDataWithoutSize(stream, lzma2DictSize,
                     hasUncompressedSize ? uncompSizeField : -1,
                     bcjFilters, checkType, out outputBuffer, out outputLength,
-                    out uncompressedSize, out unpaddedSize, headerSize);
+                    out uncompressedSize, out unpaddedSize, headerSize, maxOutputSize);
                 return true; // Already handled output, padding, and check
             }
 
@@ -190,6 +194,9 @@ internal static class XzBlock
                 long decodedSize = GetLzma2UncompressedSize(compressedData.Span);
                 if (hasUncompressedSize && decodedSize != uncompSizeField)
                     throw new LzmaDataErrorException("XZ block uncompressed size mismatch.");
+                if (decodedSize > maxOutputSize)
+                    throw new LzmaMemoryLimitException(
+                        $"XZ block claims {decodedSize:N0} uncompressed bytes, exceeding the configured limit.");
 
                 byte[] decompBuf = DecodeLzma2(
                     compressedData, lzma2DictSize, decodedSize,
@@ -330,7 +337,8 @@ internal static class XzBlock
     /// Asynchronously reads one complete block from the source, then performs CPU-bound decoding.
     /// </summary>
     internal static async ValueTask<BlockBufferResult> ReadBlockToBufferAsync(
-        Stream stream, int checkType, CancellationToken cancellationToken = default)
+        Stream stream, int checkType, long maxOutputSize = long.MaxValue,
+        CancellationToken cancellationToken = default)
     {
         using var rawBlock = new MemoryStream();
         byte[] oneByte = new byte[1];
@@ -388,7 +396,7 @@ internal static class XzBlock
 
         rawBlock.Position = 0;
         bool hasBlock = ReadBlockToBuffer(rawBlock, checkType, out byte[]? buffer,
-            out int length, out long unpaddedSize, out long uncompressedSize);
+            out int length, out long unpaddedSize, out long uncompressedSize, maxOutputSize);
         return new BlockBufferResult(hasBlock, buffer, length, unpaddedSize, uncompressedSize);
     }
 
@@ -426,7 +434,8 @@ internal static class XzBlock
     private static long ReadCompressedDataWithoutSize(Stream stream, int dictSize,
         long expectedUncompSize, (IBcjFilter Filter, uint StartPosition)[]? bcjFilters,
         int checkType, out byte[] outputBuffer, out int outputLength,
-        out long uncompressedSize, out long unpaddedSize, int headerSize)
+        out long uncompressedSize, out long unpaddedSize, int headerSize,
+        long maxOutputSize)
     {
         outputBuffer = null!;
         outputLength = 0;
@@ -434,6 +443,9 @@ internal static class XzBlock
         long decodedSize = CopyLzma2Stream(stream, compMs);
         if (expectedUncompSize >= 0 && decodedSize != expectedUncompSize)
             throw new LzmaDataErrorException("XZ block uncompressed size mismatch.");
+        if (decodedSize > maxOutputSize)
+            throw new LzmaMemoryLimitException(
+                $"XZ block claims {decodedSize:N0} uncompressed bytes, exceeding the configured limit.");
 
         int compressedSize = checked((int)compMs.Length);
         byte[] decompBuf = DecodeLzma2(
@@ -480,24 +492,43 @@ internal static class XzBlock
     }
 
     /// <summary>
-    /// Writes a single XZ block (header + LZMA2 data + padding + check).
+    /// Writes a single XZ block (header + optional BCJ/Delta filter + LZMA2 data
+    /// + padding + check). The integrity check is computed over the original
+    /// (pre-filter) data, per the XZ specification.
     /// </summary>
     /// <returns>Tuple of (unpadded size, uncompressed size) for the index.</returns>
     public static (long unpaddedSize, long uncompressedSize) WriteBlock(
         Stream output, ReadOnlyMemory<byte> uncompressedData,
-        Lzma2Encoder encoder, int checkType)
+        Lzma2Encoder encoder, int checkType,
+        ulong filterId = 0, byte[]? filterProps = null)
     {
+        // Apply the optional pre-compression filter to a copy of the data.
+        byte[]? filteredRented = null;
+        ReadOnlyMemory<byte> lzma2Input = uncompressedData;
+        if (filterId != 0)
+        {
+            filteredRented = ArrayPool<byte>.Shared.Rent(Math.Max(uncompressedData.Length, 1));
+            uncompressedData.Span.CopyTo(filteredRented);
+            FilterFactory.Create(filterId, filterProps)
+                .Encode(filteredRented.AsSpan(0, uncompressedData.Length), 0);
+            lzma2Input = filteredRented.AsMemory(0, uncompressedData.Length);
+        }
+
+        try
+        {
+
         // Encode LZMA2 data to memory
         using var lzma2Stream = new MemoryStream();
-        encoder.Encode(uncompressedData, lzma2Stream);
+        encoder.Encode(lzma2Input, lzma2Stream);
         int compressedLength = (int)lzma2Stream.Length;
         var compressedData = lzma2Stream.GetBuffer().AsSpan(0, compressedLength);
 
         // Build block header
         //   1 byte: header size / 4 - 1
-        //   1 byte: block flags (1 filter, has compressed size, has uncompressed size)
+        //   1 byte: block flags (filter count, has compressed size, has uncompressed size)
         //   VLI: compressed size
         //   VLI: uncompressed size
+        //   [optional: VLI filter ID + VLI props size + props for the BCJ/Delta filter]
         //   VLI: filter ID (0x21 = LZMA2)
         //   VLI: filter props size (1)
         //   1 byte: LZMA2 dict size byte
@@ -507,7 +538,8 @@ internal static class XzBlock
         using var headerStream = new MemoryStream();
         headerStream.WriteByte(0); // placeholder for size byte
 
-        byte blockFlags = 0x00;  // 1 filter = 0x00
+        int numFilters = filterId != 0 ? 2 : 1;
+        byte blockFlags = (byte)(numFilters - 1);
         blockFlags |= 0x40;     // has compressed size
         blockFlags |= 0x80;     // has uncompressed size (bit 7 should be set)
         headerStream.WriteByte(blockFlags);
@@ -515,7 +547,16 @@ internal static class XzBlock
         WriteMultibyteInt(headerStream, (ulong)compressedLength);
         WriteMultibyteInt(headerStream, (ulong)uncompressedData.Length);
 
-        // Filter: LZMA2
+        // Optional BCJ/Delta filter entry (must precede LZMA2 in the chain)
+        if (filterId != 0)
+        {
+            WriteMultibyteInt(headerStream, filterId);
+            WriteMultibyteInt(headerStream, (ulong)(filterProps?.Length ?? 0));
+            if (filterProps is { Length: > 0 })
+                headerStream.Write(filterProps, 0, filterProps.Length);
+        }
+
+        // Filter: LZMA2 (always last)
         WriteMultibyteInt(headerStream, XzConstants.FilterIdLzma2);
         WriteMultibyteInt(headerStream, 1); // props size
         headerStream.WriteByte(encoder.DictionarySizeByte);
@@ -546,7 +587,7 @@ internal static class XzBlock
         for (int i = 0; i < dataPadding; i++)
             output.WriteByte(0);
 
-        // Write check
+        // Write check (over the ORIGINAL, pre-filter data per the XZ spec)
         int checkSize = XzConstants.GetCheckSize(checkType);
         if (checkSize > 0)
         {
@@ -556,32 +597,65 @@ internal static class XzBlock
         // Unpadded size = header + compressed data + check (no padding included)
         long unpaddedSize = totalHeaderSize + compressedLength + checkSize;
         return (unpaddedSize, uncompressedData.Length);
+
+        }
+        finally
+        {
+            if (filteredRented != null)
+                ArrayPool<byte>.Shared.Return(filteredRented);
+        }
     }
 
     /// <summary>
-    /// Asynchronously writes a single XZ block (header + LZMA2 data + padding + check).
+    /// Asynchronously writes a single XZ block (header + optional filter + LZMA2
+    /// data + padding + check).
     /// </summary>
     /// <returns>Tuple of (unpadded size, uncompressed size) for the index.</returns>
     public static async Task<(long unpaddedSize, long uncompressedSize)> WriteBlockAsync(
         Stream output, ReadOnlyMemory<byte> uncompressedData,
-        Lzma2Encoder encoder, int checkType, CancellationToken cancellationToken = default)
+        Lzma2Encoder encoder, int checkType,
+        ulong filterId = 0, byte[]? filterProps = null,
+        CancellationToken cancellationToken = default)
     {
+        byte[]? filteredRented = null;
+        ReadOnlyMemory<byte> lzma2Input = uncompressedData;
+        if (filterId != 0)
+        {
+            filteredRented = ArrayPool<byte>.Shared.Rent(Math.Max(uncompressedData.Length, 1));
+            uncompressedData.Span.CopyTo(filteredRented);
+            FilterFactory.Create(filterId, filterProps)
+                .Encode(filteredRented.AsSpan(0, uncompressedData.Length), 0);
+            lzma2Input = filteredRented.AsMemory(0, uncompressedData.Length);
+        }
+
+        try
+        {
+
         // Encode LZMA2 data to memory (CPU-bound, stays sync)
         using var lzma2Stream = new MemoryStream();
-        encoder.Encode(uncompressedData, lzma2Stream);
+        encoder.Encode(lzma2Input, lzma2Stream);
         int compressedLength = (int)lzma2Stream.Length;
 
         // Build block header (same as sync version)
         using var headerStream = new MemoryStream();
         headerStream.WriteByte(0);
 
-        byte blockFlags = 0x00;
+        int numFilters = filterId != 0 ? 2 : 1;
+        byte blockFlags = (byte)(numFilters - 1);
         blockFlags |= 0x40;
         blockFlags |= 0x80;
         headerStream.WriteByte(blockFlags);
 
         WriteMultibyteInt(headerStream, (ulong)compressedLength);
         WriteMultibyteInt(headerStream, (ulong)uncompressedData.Length);
+
+        if (filterId != 0)
+        {
+            WriteMultibyteInt(headerStream, filterId);
+            WriteMultibyteInt(headerStream, (ulong)(filterProps?.Length ?? 0));
+            if (filterProps is { Length: > 0 })
+                headerStream.Write(filterProps, 0, filterProps.Length);
+        }
 
         WriteMultibyteInt(headerStream, XzConstants.FilterIdLzma2);
         WriteMultibyteInt(headerStream, 1);
@@ -614,7 +688,7 @@ internal static class XzBlock
             await output.WriteAsync(new byte[dataPadding], cancellationToken).ConfigureAwait(false);
         }
 
-        // Write check
+        // Write check (over the ORIGINAL, pre-filter data per the XZ spec)
         int checkSize = XzConstants.GetCheckSize(checkType);
         if (checkSize > 0)
         {
@@ -624,6 +698,13 @@ internal static class XzBlock
 
         long unpaddedSize = totalHeaderSize + compressedLength + checkSize;
         return (unpaddedSize, uncompressedData.Length);
+
+        }
+        finally
+        {
+            if (filteredRented != null)
+                ArrayPool<byte>.Shared.Return(filteredRented);
+        }
     }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]

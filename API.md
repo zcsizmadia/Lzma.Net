@@ -71,6 +71,7 @@ byte[] compressed = await XzCompressor.CompressAsync(data, new XzCompressOptions
 ```csharp
 public static byte[] Decompress(ReadOnlySpan<byte> compressedData)
 public static byte[] Decompress(ReadOnlySpan<byte> compressedData, int threads)
+public static byte[] Decompress(ReadOnlySpan<byte> compressedData, XzDecompressOptions? options)
 ```
 
 Decompresses XZ data and returns the result as a new byte array.
@@ -270,6 +271,7 @@ This is a native C# `Stream` implementation — no native code is invoked.
 ```csharp
 public XzDecompressStream(Stream stream, bool leaveOpen = false)
 public XzDecompressStream(Stream stream, int threads, bool leaveOpen = false)
+public XzDecompressStream(Stream stream, XzDecompressOptions? options, bool leaveOpen = false)
 ```
 
 | Parameter | Type | Description |
@@ -413,7 +415,27 @@ Override the preset's dictionary size (in bytes). Must be at least 4096 (4 KB). 
 public int? BlockSize { get; set; } = null;
 ```
 
-XZ block size in bytes. Must be at least 4096 (4 KB). When `null`, defaults to `max(dictionarySize × 2, 1 MB)`. Smaller blocks reduce peak memory and allow parallel decompression; larger blocks can improve compression ratio.
+XZ block size in bytes. Must be at least 4096 (4 KB). When `null`, defaults to `max(dictionarySize × 2, 1 MB)`. Smaller blocks reduce peak memory and enable parallel decompression and fine-grained random access (`XzSeekableStream`); larger blocks can improve compression ratio.
+
+---
+
+#### Filter
+
+```csharp
+public XzFilterType Filter { get; set; } = XzFilterType.None;
+```
+
+Optional BCJ/Delta pre-compression filter applied before LZMA2 (see [XzFilterType](#xzfiltertype)). BCJ filters substantially improve the compression ratio on machine code; use the variant matching the target architecture.
+
+---
+
+#### DeltaDistance
+
+```csharp
+public int DeltaDistance { get; set; } = 1;
+```
+
+Byte distance (1–256) for the `Delta` filter. Ignored for other filters.
 
 ---
 
@@ -443,6 +465,97 @@ Validates all option values. Throws `ArgumentOutOfRangeException` if any are inv
 - `Threads` must be ≥ 0
 - `DictionarySize` (if set) must be ≥ 4096
 - `BlockSize` (if set) must be ≥ 4096
+- `Filter` must be a defined `XzFilterType` value
+- `DeltaDistance` must be 1–256 when `Filter` is `Delta`
+
+---
+
+## XzSeekableStream
+
+```csharp
+public sealed class XzSeekableStream : Stream
+```
+
+A **read-only, seekable** stream providing random access to XZ compressed data.
+The XZ index is parsed once from the end of the file; a `Seek`/`Position` change
+followed by `Read` decodes only the block containing the requested position (the
+most recent block is cached). Random-access granularity is the XZ block size, so
+files produced with a small `XzCompressOptions.BlockSize` seek most efficiently.
+Concatenated streams (with padding) are supported. Not thread-safe.
+
+### Constructor
+
+```csharp
+public XzSeekableStream(Stream stream, XzDecompressOptions? options = null, bool leaveOpen = false)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `stream` | `Stream` | A **readable, seekable** stream containing XZ data. |
+| `options` | `XzDecompressOptions?` | `MaxOutputSize` applies per block. `null` = defaults. |
+| `leaveOpen` | `bool` | If `true`, the underlying stream is not closed on dispose. |
+
+**Exceptions:** `ArgumentNullException`, `ArgumentException` (not readable/seekable),
+`LzmaFormatException`, `LzmaDataErrorException` (corrupt index/footer).
+
+### Members
+
+- `long Length` — total uncompressed size (from the index; no decoding needed)
+- `long Position` / `Seek(long, SeekOrigin)` — position in **uncompressed** coordinates
+- `int BlockCount` — number of XZ blocks (the granularity of random access)
+- `Read(Span<byte>)` / `Read(byte[], int, int)` — decodes only the necessary block(s)
+
+**Example:**
+
+```csharp
+using var xz = new XzSeekableStream(File.OpenRead("large.xz"));
+xz.Position = 100_000_000;
+byte[] slice = new byte[4096];
+xz.ReadExactly(slice);
+```
+
+---
+
+## XzDecompressOptions
+
+```csharp
+public sealed class XzDecompressOptions
+```
+
+Configuration for XZ decompression.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `Threads` | `int` | `1` | `0` = all CPUs, `1` = single-threaded, `N` = up to N threads. Parallelism applies per XZ block. |
+| `MaxOutputSize` | `long` | `long.MaxValue` | Maximum total decompressed bytes before `LzmaMemoryLimitException` is thrown. Enforced **before** any allocation — protects against decompression bombs. For `XzSeekableStream`, applies per block. |
+
+Used by `XzCompressor.Decompress(data, options)`, `new XzDecompressStream(stream, options, leaveOpen)`, and `XzSeekableStream`.
+
+---
+
+## XzFilterType
+
+```csharp
+public enum XzFilterType
+```
+
+Optional pre-compression filter applied before LZMA2 (set via `XzCompressOptions.Filter`).
+BCJ filters convert relative branch addresses in machine code to absolute ones,
+substantially improving the ratio on executables. All filter types are supported
+for both encoding and decoding.
+
+| Member | Filter |
+|--------|--------|
+| `None` | No filter (default). |
+| `Delta` | Byte-wise delta with configurable distance (`XzCompressOptions.DeltaDistance`, 1–256). |
+| `X86` | BCJ for x86/x64 machine code. |
+| `PowerPc` | BCJ for PowerPC (big endian). |
+| `Ia64` | BCJ for IA-64 (Itanium). |
+| `Arm` | BCJ for ARM (32-bit). |
+| `ArmThumb` | BCJ for ARM-Thumb. |
+| `Sparc` | BCJ for SPARC. |
+| `Arm64` | BCJ for ARM64 (AArch64). |
+| `RiscV` | BCJ for RISC-V. |
 
 ---
 
@@ -490,3 +603,13 @@ public class LzmaFormatException : LzmaException
 ```
 
 Thrown when data is not in a recognized XZ/LZMA format (e.g., bad magic bytes, unsupported filter).
+
+### LzmaMemoryLimitException
+
+```csharp
+public class LzmaMemoryLimitException : LzmaException
+```
+
+Thrown when decompression would exceed `XzDecompressOptions.MaxOutputSize`.
+Typically indicates a decompression bomb or a corrupt size field; the limit is
+checked before output buffers are allocated.

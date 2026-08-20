@@ -24,6 +24,8 @@ public sealed class XzDecompressStream : Stream
     private readonly Stream _baseStream;
     private readonly bool _leaveOpen;
     private readonly int _threads;
+    private readonly long _maxOutputSize;
+    private long _totalProduced;
     private byte[]? _blockBuffer;
     private int _blockBufferPos;
     private int _blockBufferLen;
@@ -63,12 +65,35 @@ public sealed class XzDecompressStream : Stream
     /// <exception cref="ArgumentNullException"><paramref name="stream"/> is <c>null</c>.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="threads"/> is negative.</exception>
     public XzDecompressStream(Stream stream, int threads, bool leaveOpen = false)
+        : this(stream, new XzDecompressOptions { Threads = threads }, leaveOpen)
+    {
+    }
+
+    /// <summary>
+    /// Initializes a new <see cref="XzDecompressStream"/> with the specified options
+    /// (thread count and output size limit).
+    /// </summary>
+    /// <param name="stream">The stream containing XZ compressed data.</param>
+    /// <param name="options">Decompression options. When <c>null</c>, uses defaults
+    /// (single-threaded, no output limit).</param>
+    /// <param name="leaveOpen">If <c>true</c>, the underlying stream is not closed when this stream is disposed.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="stream"/> is <c>null</c>.</exception>
+    public XzDecompressStream(Stream stream, XzDecompressOptions? options, bool leaveOpen = false)
     {
         _baseStream = stream ?? throw new ArgumentNullException(nameof(stream));
-        if (threads < 0)
-            throw new ArgumentOutOfRangeException(nameof(threads), "Threads must be >= 0.");
-        _threads = threads == 0 ? Environment.ProcessorCount : threads;
+        var opts = options ?? XzDecompressOptions.Default;
+        opts.Validate();
+        _threads = opts.ResolvedThreads;
+        _maxOutputSize = opts.MaxOutputSize;
         _leaveOpen = leaveOpen;
+    }
+
+    private long RemainingAllowance()
+    {
+        // Never throws here: a stream may legitimately end exactly at the limit.
+        // Blocks claiming more than the remaining allowance are rejected inside
+        // the block reader, before any allocation.
+        return Math.Max(0, _maxOutputSize - _totalProduced);
     }
 
     /// <inheritdoc/>
@@ -222,12 +247,14 @@ public sealed class XzDecompressStream : Stream
             // Decompress next block directly into a pooled buffer.
             if (!XzBlock.ReadBlockToBuffer(_baseStream, _checkType,
                                            out byte[]? blockBuffer, out int blockLength,
-                                           out long unpaddedSize, out long uncompressedSize))
+                                           out long unpaddedSize, out long uncompressedSize,
+                                           RemainingAllowance()))
             {
                 _allBlocksRead = true;
                 continue;
             }
 
+            _totalProduced += uncompressedSize;
             _blockRecords.Add((unpaddedSize, uncompressedSize));
 
             if (blockLength > 0)
@@ -268,10 +295,11 @@ public sealed class XzDecompressStream : Stream
                 return;
 
             var results = new XzBlock.BlockBufferResult[rawBlocks.Count];
+            long allowance = RemainingAllowance();
 
             if (rawBlocks.Count == 1)
             {
-                results[0] = DecodeRawBlock(rawBlocks[0], _checkType);
+                results[0] = DecodeRawBlock(rawBlocks[0], _checkType, allowance);
             }
             else
             {
@@ -280,7 +308,7 @@ public sealed class XzDecompressStream : Stream
                 {
                     Parallel.For(0, rawBlocks.Count,
                         new ParallelOptions { MaxDegreeOfParallelism = _threads },
-                        i => results[i] = DecodeRawBlock(rawBlocks[i], checkType));
+                        i => results[i] = DecodeRawBlock(rawBlocks[i], checkType, allowance));
                 }
                 catch (AggregateException ae)
                 {
@@ -297,6 +325,22 @@ public sealed class XzDecompressStream : Stream
                 }
             }
 
+            // Enforce the cumulative limit across the batch (each block was only
+            // checked against the batch-start allowance individually).
+            long batchTotal = 0;
+            foreach (var result in results)
+                batchTotal += result.UncompressedSize;
+            if (batchTotal > allowance)
+            {
+                foreach (var result in results)
+                {
+                    if (result.Buffer != null)
+                        ArrayPool<byte>.Shared.Return(result.Buffer);
+                }
+                throw new LzmaMemoryLimitException();
+            }
+            _totalProduced += batchTotal;
+
             foreach (var result in results)
                 _decodedBlocks.Enqueue(result);
         }
@@ -307,11 +351,11 @@ public sealed class XzDecompressStream : Stream
         }
     }
 
-    private static XzBlock.BlockBufferResult DecodeRawBlock(MemoryStream raw, int checkType)
+    private static XzBlock.BlockBufferResult DecodeRawBlock(MemoryStream raw, int checkType, long maxOutputSize)
     {
         bool hasBlock = XzBlock.ReadBlockToBuffer(raw, checkType,
             out byte[]? buffer, out int length,
-            out long unpaddedSize, out long uncompressedSize);
+            out long unpaddedSize, out long uncompressedSize, maxOutputSize);
         // ReadRawBlock never returns an index indicator, so hasBlock is always true.
         return new XzBlock.BlockBufferResult(hasBlock, buffer, length, unpaddedSize, uncompressedSize);
     }
@@ -400,13 +444,14 @@ public sealed class XzDecompressStream : Stream
             }
 
             XzBlock.BlockBufferResult block = await XzBlock.ReadBlockToBufferAsync(
-                _baseStream, _checkType, cancellationToken).ConfigureAwait(false);
+                _baseStream, _checkType, RemainingAllowance(), cancellationToken).ConfigureAwait(false);
             if (!block.HasBlock)
             {
                 _allBlocksRead = true;
                 continue;
             }
 
+            _totalProduced += block.UncompressedSize;
             _blockRecords.Add((block.UnpaddedSize, block.UncompressedSize));
             if (block.Length > 0)
             {

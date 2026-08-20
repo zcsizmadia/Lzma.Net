@@ -19,19 +19,22 @@ Percentages are relative to the xz CLI at the same thread count.
 
 | Implementation | Config | MB/s | % of xz | Ratio | Size |
 |---|---|---:|---:|---:|---:|
-| **LzmaNet** | 1T defaults | 6.7 | 231% | 27.7% | 58,797,892 |
-| **LzmaNet** | 20T defaults | 33.1 | 263% | 27.8% | 58,969,832 |
+| **LzmaNet** | 1T defaults | 4.9 | 169% | 27.0% | 57,150,924 |
+| **LzmaNet** | 20T defaults | 20.5 | 165% | 27.0% | 57,150,924 |
 | xz CLI — *baseline* | 1T defaults | 2.9 | 100% | 23.2% | 49,211,276 |
-| xz CLI — *baseline* | 20T defaults | 12.6 | 100% | 23.4% | 49,495,408 |
+| xz CLI — *baseline* | 20T defaults | 12.4 | 100% | 23.4% | 49,495,408 |
+
+LzmaNet's 1- and 20-thread outputs are byte-identical: blocks are encoded
+deterministically and independently, so only the degree of parallelism differs.
 
 ### Decompression (shared xz-produced references)
 
 | Implementation | Config | Single-block MB/s | % of xz | Multi-block MB/s | % of xz |
 |---|---|---:|---:|---:|---:|
-| **LzmaNet** | 1T | 83.6 | 108% | 76.0 | 102% |
-| **LzmaNet** | 20T | 404.4 | 263% | 500.8 | 311% |
-| xz CLI — *baseline* | 1T | 77.3 | 100% | 74.3 | 100% |
-| xz CLI — *baseline* | 20T | 153.7 | 100% | 161.0 | 100% |
+| **LzmaNet** | 1T | 82.9 | 118% | 76.7 | 114% |
+| **LzmaNet** | 20T | 351.2 | 284% | 501.6 | 383% |
+| xz CLI — *baseline* | 1T | 70.2 | 100% | 67.4 | 100% |
+| xz CLI — *baseline* | 20T | 123.7 | 100% | 131.1 | 100% |
 
 ## Synthetic 16 MB — patterns + random bytes
 
@@ -39,24 +42,24 @@ Percentages are relative to the xz CLI at the same thread count.
 
 | Implementation | Config | MB/s | % of xz | Ratio | Size |
 |---|---|---:|---:|---:|---:|
-| **LzmaNet** | 1T defaults | 16.1 | 173% | 23.0% | 3,863,160 |
-| **LzmaNet** | 20T defaults | 16.0 | 168% | 23.0% | 3,863,160 |
-| **LzmaNet** | 20T BlockSize=1MiB | 150.7 | 390% | 22.7% | 3,809,616 |
-| xz CLI — *baseline* | 1T defaults | 9.3 | 100% | 22.9% | 3,843,916 |
-| xz CLI — *baseline* | 20T defaults | 9.5 | 100% | 22.9% | 3,843,924 |
-| xz CLI — *baseline* | 20T --block-size=1MiB | 38.6 | 100% | 22.6% | 3,792,704 |
+| **LzmaNet** | 1T defaults | 16.3 | 199% | 23.0% | 3,862,672 |
+| **LzmaNet** | 20T defaults | 17.0 | 215% | 23.0% | 3,862,672 |
+| **LzmaNet** | 20T BlockSize=1MiB | 157.3 | 699% | 22.7% | 3,809,056 |
+| xz CLI — *baseline* | 1T defaults | 8.2 | 100% | 22.9% | 3,843,916 |
+| xz CLI — *baseline* | 20T defaults | 7.9 | 100% | 22.9% | 3,843,924 |
+| xz CLI — *baseline* | 20T --block-size=1MiB | 22.5 | 100% | 22.6% | 3,792,704 |
 
 Neither implementation parallelizes 16 MB at default block sizes (a single block has
-nothing to split); with matched 1 MiB blocks both scale, and LzmaNet is 3.9× faster.
+nothing to split); with matched 1 MiB blocks both scale.
 
 ### Decompression (shared xz-produced references)
 
 | Implementation | Config | Single-block MB/s | % of xz | Multi-block MB/s | % of xz |
 |---|---|---:|---:|---:|---:|
-| **LzmaNet** | 1T | 79.7 | 197% | 80.7 | 199% |
-| **LzmaNet** | 20T | 81.0 | 170% | 786.5 | 1608% |
-| xz CLI — *baseline* | 1T | 40.5 | 100% | 40.5 | 100% |
-| xz CLI — *baseline* | 20T | 47.6 | 100% | 48.9 | 100% |
+| **LzmaNet** | 1T | 75.8 | 334% | 81.0 | 348% |
+| **LzmaNet** | 20T | 77.5 | 299% | 788.1 | 3043% |
+| xz CLI — *baseline* | 1T | 22.7 | 100% | 23.3 | 100% |
+| xz CLI — *baseline* | 20T | 25.9 | 100% | 25.9 | 100% |
 
 At this input size the xz CLI numbers are dominated by process spawn and pipe
 overhead (see Methodology); the in-process 1T rows (~80 MB/s) are the
@@ -68,29 +71,29 @@ representative decoder speed.
 
 | Implementation | Config | MB/s | % of xz | Ratio |
 |---|---|---:|---:|---:|
-| **LzmaNet** | 1T defaults | 4.4 | 163% | 100.0% |
-| **LzmaNet** | 20T defaults | 9.4 | 261% | 100.0% |
-| xz CLI — *baseline* | 1T defaults | 2.7 | 100% | 100.0% |
-| xz CLI — *baseline* | 20T defaults | 3.6 | 100% | 100.0% |
+| **LzmaNet** | 1T defaults | 4.6 | 177% | 100.0% |
+| **LzmaNet** | 20T defaults | 9.3 | 266% | 100.0% |
+| xz CLI — *baseline* | 1T defaults | 2.6 | 100% | 100.0% |
+| xz CLI — *baseline* | 20T defaults | 3.5 | 100% | 100.0% |
 
 ### Decompression (shared xz-produced references)
 
 | Implementation | Config | Single-block MB/s | % of xz | Multi-block MB/s | % of xz |
 |---|---|---:|---:|---:|---:|
-| **LzmaNet** | 1T | 4,990.6 | 10596% | 8,034.8 | 16844% |
-| **LzmaNet** | 20T | 1,440.5 | 3145% | 2,637.6 | 5772% |
-| xz CLI — *baseline* | 1T | 47.1 | 100% | 47.7 | 100% |
-| xz CLI — *baseline* | 20T | 45.8 | 100% | 45.7 | 100% |
+| **LzmaNet** | 1T | 5,946.5 | 12625% | 9,268.9 | 20019% |
+| **LzmaNet** | 20T | 1,739.6 | 4317% | 1,484.2 | 3845% |
+| xz CLI — *baseline* | 1T | 47.1 | 100% | 46.3 | 100% |
+| xz CLI — *baseline* | 20T | 40.3 | 100% | 38.6 | 100% |
 
 Incompressible data is stored in uncompressed LZMA2 chunks, so decoding is close
 to a memory copy for the in-process library; the xz CLI is bounded by pipe I/O.
 
 ## Key Takeaways
 
-- **Compression speed**: LzmaNet is **2.3–2.6× faster** than native xz on real-world data at every thread count, with honest like-for-like configurations.
-- **Compression ratio**: xz compresses ~4.5 percentage points better on Silesia (23.2% vs 27.7%). LzmaNet uses a greedy hash-chain (HC4) match finder; xz preset 6 uses BT4 with near-optimal parsing. This is an algorithmic trade (speed vs ratio), not overhead — closing it would need a BT match finder + optimal parser.
-- **Decompression**: LzmaNet decodes **faster than the native xz CLI single-threaded** on identical real-world input (102–108% on Silesia), helped by the carry-less-multiply CRC64 verification. With multi-block streams and threads, parallel block decode reaches **2.6–3.1×** the xz CLI rate on Silesia.
-- **Incompressible data**: LzmaNet detects expanding chunks early and stores them raw — 1.6–2.6× faster than xz to compress, and **multi-GB/s to decompress** in-process (stored blocks decode as memcpy + CLMUL CRC).
+- **Compression speed**: LzmaNet is **~1.7× faster** than native xz on real-world data at every thread count, with honest like-for-like configurations.
+- **Compression ratio**: xz compresses ~3.8 percentage points better on Silesia (23.2% vs 27.0%). LzmaNet uses a hash-chain (HC4) match finder with lazy one-step lookahead; xz preset 6 uses BT4 with near-optimal parsing. The remaining gap is an algorithmic trade (speed vs ratio) — closing it would need a BT match finder + optimal parser.
+- **Decompression**: LzmaNet decodes **faster than the native xz CLI single-threaded** on identical real-world input (114–118% on Silesia), helped by the carry-less-multiply CRC64 verification. With multi-block streams and threads, parallel block decode reaches **2.8–3.8×** the xz CLI rate on Silesia.
+- **Incompressible data**: LzmaNet detects expanding chunks early and stores them raw — ~1.8–2.7× faster than xz to compress, and **multi-GB/s to decompress** in-process (stored blocks decode as memcpy + CLMUL CRC).
 - **Interoperability**: every decompression figure above is LzmaNet decoding files produced by the native xz encoder, byte-verified.
 
 ## How the managed implementation stays close to C
@@ -103,7 +106,7 @@ The decoder applies the same disciplines liblzma uses, expressed in C#:
 - **Output-as-window** — every XZ block starts with a dictionary reset, so the block's output buffer *is* the dictionary. Each decoded byte is written once, match copies are straight in-buffer copies with a geometric overlap strategy, and no circular-buffer arithmetic runs in the hot loop.
 - **Carry-less-multiply CRC32/CRC64** — integrity checks use PCLMULQDQ folding where available (slicing-by-8 fallback), with constants derived from the polynomial at startup.
 
-The encoder carries the **dictionary across LZMA2 chunks** within a block (like xz), uses a hash-chain match finder with power-of-two masked chain slots, SIMD match comparison (32 bytes per step with `Vector256`, 8-byte word fallback), a buffered range encoder, and early abort on expanding (incompressible) chunks.
+The encoder carries the **dictionary across LZMA2 chunks** within a block (like xz), uses a hash-chain match finder with **lazy one-step match lookahead**, power-of-two masked chain slots, SIMD match comparison (32 bytes per step with `Vector256`, 8-byte word fallback), a buffered range encoder, and early abort on expanding (incompressible) chunks.
 
 ### CRC micro-benchmark
 
