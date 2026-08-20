@@ -191,7 +191,7 @@ All tuning knobs are exposed through the `XzCompressOptions` class:
 | `Extreme` | `bool` | `false` | When `true`, spends significantly more CPU to improve ratio. Equivalent to `xz -e`. |
 | `Threads` | `int` | `1` | `0` = all CPUs, `1` = single-threaded, `N` = N threads. |
 | `CheckType` | `XzCheckType` | `Crc64` | Integrity check: `None`, `Crc32`, `Crc64`, or `Sha256`. |
-| `DictionarySize` | `int?` | `null` | Override the preset's dictionary size (bytes, min 4 KB). |
+| `DictionarySize` | `int?` | `null` | Override the preset's dictionary size (bytes, min 4 KB). For one-shot `Compress`/`CompressAsync` and `.lzma` compression, the effective dictionary is automatically capped at the input size when not set explicitly. |
 | `BlockSize` | `int?` | `null` | XZ block size (bytes, min 4 KB). `null` = `max(dict×2, 1 MB)`. Blocks are the unit of parallel processing and random access. |
 | `Filter` | `XzFilterType` | `None` | Optional BCJ/Delta pre-compression filter (`X86`, `Arm64`, `Delta`, …). |
 | `DeltaDistance` | `int` | `1` | Byte distance for the Delta filter (1–256). |
