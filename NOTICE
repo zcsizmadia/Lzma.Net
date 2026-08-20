@@ -1,0 +1,4 @@
+This library is a pure C# port of liblzma from XZ Utils 5.8.3
+(https://xz.tukaani.org/xz-utils/), which is likewise licensed under the
+BSD Zero Clause License (0BSD). No attribution to the original authors is
+legally required by 0BSD; this notice is provided as a courtesy.

@@ -165,9 +165,34 @@ internal sealed class LzmaDecoder
     public void DecodeChunk(ref RangeDecoder rc, Span<byte> output, ref int outPos,
                             int dictStart, int uncompressedSize)
     {
+        DecodeCore(ref rc, output, ref outPos, dictStart, uncompressedSize,
+            exactSize: true, allowEndMarker: false);
+    }
+
+    /// <summary>
+    /// Decodes until the LZMA end marker (distance 0xFFFFFFFF) or until at least
+    /// <paramref name="softTarget"/> more bytes have been decoded, whichever comes
+    /// first. Used for the legacy .lzma format with an unknown uncompressed size.
+    /// The output buffer must have at least <see cref="LzmaConstants.kMatchMaxLen"/>
+    /// bytes of slack beyond <paramref name="softTarget"/>, because the final match
+    /// may overshoot the soft target.
+    /// </summary>
+    /// <returns>True when the end marker was reached.</returns>
+    public bool DecodeWithEndMarker(ref RangeDecoder rc, Span<byte> output, ref int outPos,
+                                    int dictStart, int softTarget)
+    {
+        return DecodeCore(ref rc, output, ref outPos, dictStart, softTarget,
+            exactSize: false, allowEndMarker: true);
+    }
+
+    private bool DecodeCore(ref RangeDecoder rc, Span<byte> output, ref int outPos,
+                            int dictStart, int uncompressedSize,
+                            bool exactSize, bool allowEndMarker)
+    {
+        int slack = exactSize ? 0 : LzmaConstants.kMatchMaxLen;
         if ((uint)dictStart > (uint)outPos
             || uncompressedSize < 0
-            || uncompressedSize > output.Length - outPos)
+            || uncompressedSize > output.Length - outPos - slack)
         {
             throw new LzmaDataErrorException("Output buffer is too small for the LZMA data.");
         }
@@ -297,7 +322,19 @@ internal sealed class LzmaDecoder
 
                 len += LzmaConstants.kMatchMinLen;
 
-                if (len > remaining)
+                if (allowEndMarker && rep0 == -1)
+                {
+                    // Distance 0xFFFFFFFF marks the end of a .lzma payload.
+                    outPos = pos;
+                    _state = state;
+                    _rep0 = rep0;
+                    _rep1 = rep1;
+                    _rep2 = rep2;
+                    _rep3 = rep3;
+                    return true;
+                }
+
+                if (exactSize && len > remaining)
                     throw new LzmaDataErrorException("LZMA match exceeds chunk boundary.");
                 if (rep0 < 0 || rep0 >= pos - dictStart)
                     throw new LzmaDataErrorException("Invalid match distance.");
@@ -314,6 +351,7 @@ internal sealed class LzmaDecoder
         _rep1 = rep1;
         _rep2 = rep2;
         _rep3 = rep3;
+        return false;
     }
 
     /// <summary>

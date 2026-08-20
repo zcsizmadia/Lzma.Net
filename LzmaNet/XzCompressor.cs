@@ -22,8 +22,11 @@ public static class XzCompressor
     /// <returns>A byte array containing the XZ compressed data.</returns>
     public static byte[] Compress(ReadOnlySpan<byte> data, XzCompressOptions? options = null)
     {
+        // The full input size is known, so the effective dictionary is capped at
+        // it: a larger dictionary cannot help but costs proportional memory.
+        var opts = (options ?? XzCompressOptions.Default).EffectiveForInputSize(data.Length);
         using var output = new MemoryStream();
-        using (var xz = new XzCompressStream(output, options, leaveOpen: true))
+        using (var xz = new XzCompressStream(output, opts, leaveOpen: true))
         {
             xz.Write(data);
         }
@@ -39,8 +42,9 @@ public static class XzCompressor
     /// <returns>A task containing a byte array of the XZ compressed data.</returns>
     public static async Task<byte[]> CompressAsync(ReadOnlyMemory<byte> data, XzCompressOptions? options = null, CancellationToken cancellationToken = default)
     {
+        var opts = (options ?? XzCompressOptions.Default).EffectiveForInputSize(data.Length);
         var output = new MemoryStream();
-        var xz = new XzCompressStream(output, options, leaveOpen: true);
+        var xz = new XzCompressStream(output, opts, leaveOpen: true);
         await using (xz.ConfigureAwait(false))
         {
             await xz.WriteAsync(data, cancellationToken).ConfigureAwait(false);
