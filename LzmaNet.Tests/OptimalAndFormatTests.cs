@@ -129,6 +129,59 @@ public class OptimalAndFormatTests
         return ms.Length;
     }
 
+    // ── Effective-dictionary clamping for known-size inputs ─────────
+
+    [Test]
+    public async Task Compress_ClampsDictionaryToInputSize()
+    {
+        // For a 4 KB input, the effective dictionary at preset 9 is clamped to
+        // the 4096 minimum — so the output must be byte-identical to explicitly
+        // requesting a 4096-byte dictionary (including the header's dict byte).
+        byte[] original = MakeTextLikeData(4096);
+        byte[] clamped = XzCompressor.Compress(original, new XzCompressOptions { Preset = 9 });
+        byte[] explicit4k = XzCompressor.Compress(original,
+            new XzCompressOptions { Preset = 9, DictionarySize = 4096 });
+
+        await Assert.That(clamped.SequenceEqual(explicit4k)).IsTrue();
+        await Assert.That(XzCompressor.Decompress(clamped).SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    public async Task Compress_ExplicitDictionarySizeIsNotClamped()
+    {
+        // An explicit dictionary wins: its header dict-size byte differs from
+        // the clamped default's.
+        byte[] original = MakeTextLikeData(4096);
+        byte[] clamped = XzCompressor.Compress(original, new XzCompressOptions { Preset = 9 });
+        byte[] explicit1M = XzCompressor.Compress(original,
+            new XzCompressOptions { Preset = 9, DictionarySize = 1 << 20 });
+
+        await Assert.That(clamped.SequenceEqual(explicit1M)).IsFalse();
+        await Assert.That(XzCompressor.Decompress(explicit1M).SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    public async Task LzmaAlone_ClampsDictionaryToInputSize()
+    {
+        byte[] original = MakeTextLikeData(10_000);
+        using var ms = new MemoryStream();
+        using (var enc = new LzmaAloneCompressStream(ms, preset: 9, leaveOpen: true))
+            enc.Write(original);
+
+        // Header bytes 1..5 hold the dictionary size (LE32) — clamped to the
+        // input length and rounded up to a power of two (xz's alone decoder
+        // mishandles non-canonical dictionary sizes).
+        byte[] header = ms.ToArray();
+        uint dict = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(1, 4));
+        await Assert.That(dict).IsEqualTo(16_384u);
+
+        ms.Position = 0;
+        using var dec = new LzmaAloneDecompressStream(ms, leaveOpen: true);
+        using var output = new MemoryStream();
+        dec.CopyTo(output);
+        await Assert.That(output.ToArray().SequenceEqual(original)).IsTrue();
+    }
+
     // ── Legacy .lzma format ──────────────────────────────────────────
 
     [Test]

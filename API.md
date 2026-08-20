@@ -409,6 +409,8 @@ public int? DictionarySize { get; set; } = null;
 
 Override the preset's dictionary size (in bytes). Must be at least 4096 (4 KB). When `null`, determined automatically by `Preset`. Larger dictionaries improve compression of data with long-range repetitions but increase memory usage during both compression and decompression.
 
+When `null` and the full input size is known up front (one-shot `XzCompressor.Compress`/`CompressAsync`, or `.lzma` compression, which buffers its input), the effective dictionary is additionally **capped at the input size** — a larger dictionary cannot improve compression but costs proportional match-finder memory (roughly 10× the dictionary at presets 7–9). Setting `DictionarySize` explicitly disables the cap.
+
 ---
 
 #### BlockSize

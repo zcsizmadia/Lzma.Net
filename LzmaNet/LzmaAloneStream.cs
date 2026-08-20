@@ -82,6 +82,14 @@ public sealed class LzmaAloneCompressStream : Stream
         if (_finished) return;
         _finished = true;
 
+        // The whole input is buffered, so cap the dictionary at the input size:
+        // larger cannot help but costs proportional match-finder memory. The
+        // header value is rounded up to a power of two — xz's alone decoder
+        // mis-decodes streams whose header carries a non-canonical dictionary
+        // size (observed empirically: silent truncation with exit code 0).
+        long capped = Math.Clamp(_inputBuffer.Length, 4096, _props.DictionarySize);
+        _props.DictionarySize = (int)System.Numerics.BitOperations.RoundUpToPowerOf2((uint)capped);
+
         // 13-byte header: properties byte, dictionary size (LE32),
         // uncompressed size (LE64; known, so no end marker is needed).
         Span<byte> header = stackalloc byte[13];
