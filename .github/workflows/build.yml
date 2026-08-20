@@ -48,7 +48,7 @@ jobs:
         if: matrix.rid == 'linux-musl-arm64'
         uses: laverdet/alpine-arm64@v1
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install packages
         shell: sh
@@ -58,7 +58,7 @@ jobs:
           fi
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           # Testing in CI runs on all supported .NET versions to ensure compatibility.
           dotnet-version: |
@@ -81,10 +81,10 @@ jobs:
     name: Pack NuGet
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
 
