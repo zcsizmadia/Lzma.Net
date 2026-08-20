@@ -3,6 +3,7 @@
 using System.Buffers;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
 
 namespace LzmaNet.LZ;
 
@@ -269,17 +270,30 @@ internal sealed class HashChainMatchFinder : IDisposable
 
     /// <summary>
     /// Computes the common-prefix length of buffer[a..] and buffer[b..], up to limit,
-    /// comparing 8 bytes at a time.
+    /// comparing 32 bytes at a time with SIMD where available, then 8 bytes at a time.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int MatchLength(byte[] buffer, int a, int b, int limit)
     {
         int len = 0;
+        ref byte bufRef = ref System.Runtime.InteropServices.MemoryMarshal
+            .GetArrayDataReference(buffer);
+
+        if (Vector256.IsHardwareAccelerated)
+        {
+            while (len + 32 <= limit)
+            {
+                var va = Vector256.LoadUnsafe(ref bufRef, (nuint)(a + len));
+                var vb = Vector256.LoadUnsafe(ref bufRef, (nuint)(b + len));
+                uint neq = ~Vector256.Equals(va, vb).ExtractMostSignificantBits();
+                if (neq != 0)
+                    return len + BitOperations.TrailingZeroCount(neq);
+                len += 32;
+            }
+        }
 
         if (BitConverter.IsLittleEndian)
         {
-            ref byte bufRef = ref System.Runtime.InteropServices.MemoryMarshal
-                .GetArrayDataReference(buffer);
             while (len + 8 <= limit)
             {
                 ulong x = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref bufRef, a + len))

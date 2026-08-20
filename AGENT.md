@@ -65,7 +65,8 @@ This is a core design principle. Always prefer:
 - The LZMA decoder uses **output-as-window**: the block's output buffer is the dictionary (XZ blocks always start with a dict reset), so there is no separate sliding-window buffer (`OutputWindow` was removed)
 - Hot-loop state (range, code, LZMA state, rep distances) is hoisted into locals and written back once per chunk — keep it that way
 - Probability arrays are accessed via `MemoryMarshal.GetArrayDataReference` + `Unsafe.Add` to skip bounds checks; the index invariants are established by array construction — don't change sizes without checking indices
-- CRC32/CRC64 use slicing-by-8; the match finder uses power-of-two masked chain slots and 8-byte word compares
+- CRC32/CRC64 use PCLMULQDQ carry-less-multiply folding (slicing-by-8 fallback). Folding constants are DERIVED from the polynomial at startup in `CrcFolding` — the reflected-CLMUL exponent convention is D+width-1 (low half) / D+width-65 (high half) for fold distance D; don't "fix" these without re-running the CRC reference tests
+- The match finder uses power-of-two masked chain slots and SIMD match comparison (`Vector256` 32-byte steps, 8-byte word fallback)
 - The `Lzma2Encoder` carries the dictionary ACROSS chunks within a block (first chunk 0xE0, continuation chunks 0x80, state reset 0xA0/0xC0 after stored-uncompressed chunks). `LzmaEncoder.ResetState()` and `ResetDictionary()` are separate on purpose — dictionary resets happen once per XZ block, state resets whenever LZMA2 requires them
 - The match finder's window is the full dictionary; its buffer slides by multiples of the power-of-two cyclic size and rebases the hash/chain tables so slot mapping stays valid — don't change the slide granularity without revisiting that invariant
 - `LzmaEncoder.EncodeChunk` aborts (returns -1) when a chunk is expanding; the caller stores it uncompressed and must reset state before the next chunk (LZMA2 requires this anyway)

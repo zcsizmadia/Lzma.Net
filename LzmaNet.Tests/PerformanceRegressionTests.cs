@@ -55,12 +55,13 @@ public class PerformanceRegressionTests
     [Test]
     public async Task Crc32_MatchesReference_AllLengths()
     {
-        // Cover the slicing-by-8 block loop plus every tail length
+        // Cover the vector-folding path (>= 64 bytes), the slicing-by-8 loop,
+        // and every tail length around the 64/128-byte thresholds.
         var rng = new Random(1234);
         byte[] data = new byte[1024 + 7];
         rng.NextBytes(data);
 
-        for (int len = 0; len <= 64; len++)
+        for (int len = 0; len <= 200; len++)
             await Assert.That(Crc32.Compute(data.AsSpan(0, len)))
                 .IsEqualTo(Crc32Reference(data.AsSpan(0, len)));
 
@@ -74,11 +75,32 @@ public class PerformanceRegressionTests
         byte[] data = new byte[1024 + 7];
         rng.NextBytes(data);
 
-        for (int len = 0; len <= 64; len++)
+        for (int len = 0; len <= 200; len++)
             await Assert.That(Crc64.Compute(data.AsSpan(0, len)))
                 .IsEqualTo(Crc64Reference(data.AsSpan(0, len)));
 
         await Assert.That(Crc64.Compute(data)).IsEqualTo(Crc64Reference(data));
+    }
+
+    [Test]
+    public async Task Crc_VectorAndScalarPathsAgree_LargeBuffer()
+    {
+        // The vector-folding path must produce identical results to the
+        // table-only path on a large buffer, including with a nonzero
+        // continuation state.
+        var rng = new Random(4321);
+        byte[] data = new byte[1024 * 1024 + 13];
+        rng.NextBytes(data);
+
+        await Assert.That(Crc32.Compute(data)).IsEqualTo(Crc32.ComputeScalar(data));
+        await Assert.That(Crc64.Compute(data)).IsEqualTo(Crc64.ComputeScalar(data));
+
+        uint c32 = Crc32.Compute(data.AsSpan(0, 100));
+        ulong c64 = Crc64.Compute(data.AsSpan(0, 100));
+        await Assert.That(Crc32.Compute(data.AsSpan(100), c32))
+            .IsEqualTo(Crc32.ComputeScalar(data.AsSpan(100), c32));
+        await Assert.That(Crc64.Compute(data.AsSpan(100), c64))
+            .IsEqualTo(Crc64.ComputeScalar(data.AsSpan(100), c64));
     }
 
     [Test]

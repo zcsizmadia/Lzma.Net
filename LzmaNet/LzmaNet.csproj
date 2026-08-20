@@ -27,6 +27,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="LzmaNet.Tests" />
+    <InternalsVisibleTo Include="LzmaNet.Benchmark" />
   </ItemGroup>
 
 </Project>
