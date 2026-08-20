@@ -313,7 +313,9 @@ await xz.CopyToAsync(output);
 
 ### Async Support
 
-`XzDecompressStream` supports the following async methods:
+`XzDecompressStream` supports the following async methods. When `Threads > 1`,
+the async read path decodes blocks in parallel just like the sync path (raw
+blocks are read with async I/O; decoding runs on worker threads).
 
 - `ReadAsync(Memory<byte>, CancellationToken)` — reads decompressed data asynchronously
 - `ReadAsync(byte[], int, int, CancellationToken)` — array-based overload

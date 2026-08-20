@@ -6,13 +6,15 @@ using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 
+using ArmAes = System.Runtime.Intrinsics.Arm.Aes;
+
 namespace LzmaNet.Check;
 
 /// <summary>
 /// CRC64 using the polynomial from the ECMA-182 standard (0xC96C5795D7870F42 reflected).
 /// Used by LZMA_CHECK_CRC64 in XZ containers.
-/// Bulk data uses carry-less multiplication folding (PCLMULQDQ) where available,
-/// falling back to slicing-by-8.
+/// Bulk data uses carry-less multiplication folding (PCLMULQDQ on x86/x64,
+/// PMULL on ARM64) where available, falling back to slicing-by-8.
 /// </summary>
 internal static class Crc64
 {
@@ -88,7 +90,7 @@ internal static class Crc64
     public static ulong Compute(ReadOnlySpan<byte> data, ulong crc = 0)
     {
         crc = ~crc;
-        if (Pclmulqdq.IsSupported && data.Length >= 64)
+        if (CrcFolding.IsSupported && data.Length >= 64)
             crc = UpdateClmul(data, crc);
         else
             crc = UpdateScalar(data, crc);
@@ -173,8 +175,16 @@ internal static class Crc64
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static Vector128<ulong> Fold(Vector128<ulong> acc, Vector128<ulong> k, Vector128<ulong> data)
     {
-        return Pclmulqdq.CarrylessMultiply(acc, k, 0x00)
-             ^ Pclmulqdq.CarrylessMultiply(acc, k, 0x11)
+        if (Pclmulqdq.IsSupported)
+        {
+            return Pclmulqdq.CarrylessMultiply(acc, k, 0x00)
+                 ^ Pclmulqdq.CarrylessMultiply(acc, k, 0x11)
+                 ^ data;
+        }
+
+        // ARM64 PMULL: lower×lower and upper×upper widening polynomial multiply.
+        return ArmAes.PolynomialMultiplyWideningLower(acc.GetLower(), k.GetLower())
+             ^ ArmAes.PolynomialMultiplyWideningUpper(acc, k)
              ^ data;
     }
 

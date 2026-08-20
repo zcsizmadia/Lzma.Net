@@ -340,12 +340,34 @@ internal static class XzBlock
         Stream stream, int checkType, long maxOutputSize = long.MaxValue,
         CancellationToken cancellationToken = default)
     {
-        using var rawBlock = new MemoryStream();
+        using MemoryStream? rawBlock = await ReadRawBlockAsync(stream, checkType, cancellationToken)
+            .ConfigureAwait(false);
+        if (rawBlock == null)
+            return new BlockBufferResult(false, null, 0, 0, 0);
+
+        bool hasBlock = ReadBlockToBuffer(rawBlock, checkType, out byte[]? buffer,
+            out int length, out long unpaddedSize, out long uncompressedSize, maxOutputSize);
+        return new BlockBufferResult(hasBlock, buffer, length, unpaddedSize, uncompressedSize);
+    }
+
+    /// <summary>
+    /// Asynchronously reads one complete raw (still compressed) block from the
+    /// stream without decoding it, or returns null when the index indicator is
+    /// found instead. The returned stream is positioned at 0 and exposable.
+    /// Used by async parallel block decompression to separate I/O from CPU work.
+    /// </summary>
+    internal static async ValueTask<MemoryStream?> ReadRawBlockAsync(
+        Stream stream, int checkType, CancellationToken cancellationToken = default)
+    {
+        var rawBlock = new MemoryStream();
         byte[] oneByte = new byte[1];
         await ReadExactAsync(stream, oneByte, cancellationToken).ConfigureAwait(false);
         int headerSizeByte = oneByte[0];
         if (headerSizeByte == 0)
-            return new BlockBufferResult(false, null, 0, 0, 0);
+        {
+            rawBlock.Dispose();
+            return null;
+        }
 
         int headerSize = (headerSizeByte + 1) * 4;
         byte[] header = ArrayPool<byte>.Shared.Rent(headerSize);
@@ -389,15 +411,18 @@ internal static class XzBlock
             await CopyExactAsync(stream, rawBlock, paddingSize + checkSize, cancellationToken)
                 .ConfigureAwait(false);
         }
+        catch
+        {
+            rawBlock.Dispose();
+            throw;
+        }
         finally
         {
             ArrayPool<byte>.Shared.Return(header);
         }
 
         rawBlock.Position = 0;
-        bool hasBlock = ReadBlockToBuffer(rawBlock, checkType, out byte[]? buffer,
-            out int length, out long unpaddedSize, out long uncompressedSize, maxOutputSize);
-        return new BlockBufferResult(hasBlock, buffer, length, unpaddedSize, uncompressedSize);
+        return rawBlock;
     }
 
     /// <summary>
