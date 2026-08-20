@@ -6,13 +6,15 @@ using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 
+using ArmAes = System.Runtime.Intrinsics.Arm.Aes;
+
 namespace LzmaNet.Check;
 
 /// <summary>
 /// CRC32 using the polynomial from the IEEE 802.3 standard (0xEDB88320 reflected).
 /// Used by XZ stream headers, footers, block headers, and LZMA_CHECK_CRC32.
-/// Bulk data uses carry-less multiplication folding (PCLMULQDQ) where available,
-/// falling back to slicing-by-8.
+/// Bulk data uses carry-less multiplication folding (PCLMULQDQ on x86/x64,
+/// PMULL on ARM64) where available, falling back to slicing-by-8.
 /// </summary>
 internal static class Crc32
 {
@@ -70,7 +72,7 @@ internal static class Crc32
     public static uint Compute(ReadOnlySpan<byte> data, uint crc = 0)
     {
         crc = ~crc;
-        if (Pclmulqdq.IsSupported && data.Length >= 64)
+        if (CrcFolding.IsSupported && data.Length >= 64)
             crc = UpdateClmul(data, crc);
         else
             crc = UpdateScalar(data, crc);
@@ -162,8 +164,16 @@ internal static class Crc32
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static Vector128<ulong> Fold(Vector128<ulong> acc, Vector128<ulong> k, Vector128<ulong> data)
     {
-        return Pclmulqdq.CarrylessMultiply(acc, k, 0x00)
-             ^ Pclmulqdq.CarrylessMultiply(acc, k, 0x11)
+        if (Pclmulqdq.IsSupported)
+        {
+            return Pclmulqdq.CarrylessMultiply(acc, k, 0x00)
+                 ^ Pclmulqdq.CarrylessMultiply(acc, k, 0x11)
+                 ^ data;
+        }
+
+        // ARM64 PMULL: lower×lower and upper×upper widening polynomial multiply.
+        return ArmAes.PolynomialMultiplyWideningLower(acc.GetLower(), k.GetLower())
+             ^ ArmAes.PolynomialMultiplyWideningUpper(acc, k)
              ^ data;
     }
 
@@ -196,6 +206,12 @@ internal static class Crc32
 /// </summary>
 internal static class CrcFolding
 {
+    /// <summary>
+    /// Whether a carry-less multiply instruction is available
+    /// (PCLMULQDQ on x86/x64, PMULL via the crypto extension on ARM64).
+    /// </summary>
+    public static bool IsSupported => Pclmulqdq.IsSupported || ArmAes.IsSupported;
+
     /// <summary>
     /// Returns the bit-reflected value of (x^exponent mod P) for a CRC of the
     /// given width, used as an unshifted operand for reflected-domain
