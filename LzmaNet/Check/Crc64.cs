@@ -3,16 +3,28 @@
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 
 namespace LzmaNet.Check;
 
 /// <summary>
 /// CRC64 using the polynomial from the ECMA-182 standard (0xC96C5795D7870F42 reflected).
 /// Used by LZMA_CHECK_CRC64 in XZ containers.
-/// Implemented with slicing-by-8 for high throughput on bulk data.
+/// Bulk data uses carry-less multiplication folding (PCLMULQDQ) where available,
+/// falling back to slicing-by-8.
 /// </summary>
 internal static class Crc64
 {
+    private const ulong PolyNormal = 0x42F0E1EBA9EA3693; // non-reflected ECMA-182
+
+    // Folding constants derived from the polynomial at startup (see CrcFolding).
+    private static readonly Vector128<ulong> Fold512 = Vector128.Create(
+        CrcFolding.XPowModP(512 + 64 - 1, PolyNormal, 64),
+        CrcFolding.XPowModP(512 + 64 - 65, PolyNormal, 64));
+    private static readonly Vector128<ulong> Fold128 = Vector128.Create(
+        CrcFolding.XPowModP(128 + 64 - 1, PolyNormal, 64),
+        CrcFolding.XPowModP(128 + 64 - 65, PolyNormal, 64));
     // 8 tables of 256 entries, flattened: Table[k * 256 + v] is the CRC of
     // byte v followed by k zero bytes. Table[0..256) is the classic table.
     private static readonly ulong[] Table = CreateTable();
@@ -76,6 +88,23 @@ internal static class Crc64
     public static ulong Compute(ReadOnlySpan<byte> data, ulong crc = 0)
     {
         crc = ~crc;
+        if (Pclmulqdq.IsSupported && data.Length >= 64)
+            crc = UpdateClmul(data, crc);
+        else
+            crc = UpdateScalar(data, crc);
+        return ~crc;
+    }
+
+    /// <summary>
+    /// Table-only computation (slicing-by-8), exposed for tests and benchmarks.
+    /// </summary>
+    internal static ulong ComputeScalar(ReadOnlySpan<byte> data, ulong crc = 0)
+    {
+        return ~UpdateScalar(data, ~crc);
+    }
+
+    private static ulong UpdateScalar(ReadOnlySpan<byte> data, ulong crc)
+    {
         ref ulong t = ref MemoryMarshal.GetArrayDataReference(Table);
         int i = 0;
 
@@ -98,7 +127,55 @@ internal static class Crc64
         for (; i < data.Length; i++)
             crc = Unsafe.Add(ref t, (int)(byte)(crc ^ data[i])) ^ (crc >> 8);
 
-        return ~crc;
+        return crc;
+    }
+
+    private static ulong UpdateClmul(ReadOnlySpan<byte> data, ulong crc)
+    {
+        ref byte src = ref MemoryMarshal.GetReference(data);
+        int length = data.Length;
+        int offset = 0;
+
+        Vector128<ulong> a0 = Vector128.LoadUnsafe(ref src, 0).AsUInt64()
+            ^ Vector128.CreateScalar(crc);
+        Vector128<ulong> a1 = Vector128.LoadUnsafe(ref src, 16).AsUInt64();
+        Vector128<ulong> a2 = Vector128.LoadUnsafe(ref src, 32).AsUInt64();
+        Vector128<ulong> a3 = Vector128.LoadUnsafe(ref src, 48).AsUInt64();
+        offset += 64;
+
+        while (length - offset >= 64)
+        {
+            a0 = Fold(a0, Fold512, Vector128.LoadUnsafe(ref src, (nuint)offset).AsUInt64());
+            a1 = Fold(a1, Fold512, Vector128.LoadUnsafe(ref src, (nuint)(offset + 16)).AsUInt64());
+            a2 = Fold(a2, Fold512, Vector128.LoadUnsafe(ref src, (nuint)(offset + 32)).AsUInt64());
+            a3 = Fold(a3, Fold512, Vector128.LoadUnsafe(ref src, (nuint)(offset + 48)).AsUInt64());
+            offset += 64;
+        }
+
+        Vector128<ulong> acc = Fold(a0, Fold128, a1);
+        acc = Fold(acc, Fold128, a2);
+        acc = Fold(acc, Fold128, a3);
+
+        while (length - offset >= 16)
+        {
+            acc = Fold(acc, Fold128, Vector128.LoadUnsafe(ref src, (nuint)offset).AsUInt64());
+            offset += 16;
+        }
+
+        // Final reduction via the exact table computation over the accumulator
+        // bytes (congruent mod P to the processed prefix), then the tail.
+        Span<byte> accBytes = stackalloc byte[16];
+        acc.AsByte().CopyTo(accBytes);
+        crc = UpdateScalar(accBytes, 0);
+        return UpdateScalar(data.Slice(offset), crc);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector128<ulong> Fold(Vector128<ulong> acc, Vector128<ulong> k, Vector128<ulong> data)
+    {
+        return Pclmulqdq.CarrylessMultiply(acc, k, 0x00)
+             ^ Pclmulqdq.CarrylessMultiply(acc, k, 0x11)
+             ^ data;
     }
 
     /// <summary>
