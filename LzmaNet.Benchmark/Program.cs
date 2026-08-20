@@ -130,7 +130,9 @@ void RunScenario(string name, byte[] data, int runs, bool xzBlockMatchedRow)
     }
 
     // ---- Decompression (cross-decode shared reference files) ----
-    if (xzPath == null)
+    // inputFile is non-null exactly when xzPath is; checking both satisfies
+    // nullable flow analysis.
+    if (xzPath == null || inputFile == null)
     {
         Console.WriteLine("  (decompression cross-decode skipped: reference files need the xz CLI)");
         Console.WriteLine();
