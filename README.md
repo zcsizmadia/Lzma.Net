@@ -18,6 +18,9 @@ A **native C# implementation** of the XZ/LZMA2/LZMA compression format. No nativ
 - **Async API** — `CompressAsync` / `DecompressAsync` and async stream methods for non-blocking I/O
 - **Multi-threaded compression** — parallel block compression via the `Threads` option
 - **Multi-threaded decompression** — parallel block decoding of multi-block streams via `XzCompressor.Decompress(data, threads)` / `new XzDecompressStream(stream, threads)`
+- **Random access** — `XzSeekableStream` seeks anywhere in the uncompressed data and decodes only the blocks it needs, using the XZ index
+- **BCJ/Delta filters** — encode *and* decode support for x86, ARM, ARM64, ARM-Thumb, PowerPC, SPARC, IA-64, RISC-V, and Delta filters; BCJ dramatically improves ratio on executables (`XzCompressOptions.Filter`)
+- **Decompression-bomb protection** — `XzDecompressOptions.MaxOutputSize` rejects oversized output claims before any allocation happens
 - **Presets 0–9** — matching `xz` CLI compression levels and dictionary sizes
 - **Extreme mode** — equivalent to `xz -e`, spends more CPU time for better compression
 - **Integrity checks** — CRC32, CRC64, SHA-256, or no check
@@ -34,12 +37,12 @@ Quick summary — [Silesia corpus](https://sun.aei.polsl.pl/~sdeor/index.php?pag
 
 | | Compress | % of xz | Decompress | % of xz | Ratio |
 |---|---:|---:|---:|---:|---:|
-| **LzmaNet** (pure C#, 1 thread) | 6.7 MB/s | 231% | 83.6 MB/s | 108% | 27.7% |
-| **LzmaNet** (pure C#, 20 threads) | 33.1 MB/s | 263% | 500.8 MB/s | 311% | 27.8% |
-| xz CLI (native, 1 thread) — *baseline* | 2.9 MB/s | 100% | 77.3 MB/s | 100% | 23.2% |
-| xz CLI (native, 20 threads) — *baseline* | 12.6 MB/s | 100% | 161.0 MB/s | 100% | 23.4% |
+| **LzmaNet** (pure C#, 1 thread) | 4.9 MB/s | 169% | 82.9 MB/s | 118% | 27.0% |
+| **LzmaNet** (pure C#, 20 threads) | 20.5 MB/s | 165% | 501.6 MB/s | 383% | 27.0% |
+| xz CLI (native, 1 thread) — *baseline* | 2.9 MB/s | 100% | 70.2 MB/s | 100% | 23.2% |
+| xz CLI (native, 20 threads) — *baseline* | 12.4 MB/s | 100% | 131.1 MB/s | 100% | 23.4% |
 
-LzmaNet compresses ~2.3× faster than native xz and decodes ~8% faster single-threaded (3.1× with parallel block decode of multi-block streams). xz achieves a ~4.5-point better ratio — its BT4 near-optimal parser trades speed for ratio, LzmaNet's greedy hash-chain finder trades the other way.
+LzmaNet compresses ~1.7× faster than native xz and decodes ~18% faster single-threaded (3.8× with parallel block decode of multi-block streams). xz achieves a ~3.8-point better ratio — its BT4 near-optimal parser trades speed for ratio, LzmaNet's lazy hash-chain finder trades the other way.
 
 LzmaNet compresses ~3.7× faster than native liblzma and decompresses at native `xz` speed single-threaded. Multi-block streams can additionally be compressed *and* decompressed with parallel block processing (`XzCompressOptions.Threads`, `XzCompressor.Decompress(data, threads)`).
 
@@ -127,6 +130,44 @@ await using (var xz = new XzCompressStream(output))
 }
 ```
 
+### Random access — read a slice without decompressing the file
+
+```csharp
+using LzmaNet;
+
+// Works best on multi-block files (BlockSize controls seek granularity)
+using var xz = new XzSeekableStream(File.OpenRead("large.xz"));
+xz.Position = 100_000_000;          // seek in UNCOMPRESSED coordinates
+byte[] slice = new byte[4096];
+xz.ReadExactly(slice);              // decodes only the containing block(s)
+```
+
+### Compress an executable with a BCJ filter
+
+```csharp
+using LzmaNet;
+
+var options = new XzCompressOptions
+{
+    Preset = 6,
+    Filter = XzFilterType.X86,   // rel->abs branch conversion for x86/x64 code
+};
+byte[] compressed = XzCompressor.Compress(File.ReadAllBytes("app.dll"), options);
+```
+
+### Decompress untrusted data safely
+
+```csharp
+using LzmaNet;
+
+var options = new XzDecompressOptions
+{
+    MaxOutputSize = 100 * 1024 * 1024, // reject bombs before allocating
+    Threads = 0,
+};
+byte[] data = XzCompressor.Decompress(untrustedBytes, options);
+```
+
 ### ASP.NET — decompress an upload on the fly
 
 ```csharp
@@ -149,7 +190,11 @@ All tuning knobs are exposed through the `XzCompressOptions` class:
 | `Threads` | `int` | `1` | `0` = all CPUs, `1` = single-threaded, `N` = N threads. |
 | `CheckType` | `XzCheckType` | `Crc64` | Integrity check: `None`, `Crc32`, `Crc64`, or `Sha256`. |
 | `DictionarySize` | `int?` | `null` | Override the preset's dictionary size (bytes, min 4 KB). |
-| `BlockSize` | `int?` | `null` | XZ block size (bytes, min 4 KB). `null` = `max(dict×2, 1 MB)`. |
+| `BlockSize` | `int?` | `null` | XZ block size (bytes, min 4 KB). `null` = `max(dict×2, 1 MB)`. Blocks are the unit of parallel processing and random access. |
+| `Filter` | `XzFilterType` | `None` | Optional BCJ/Delta pre-compression filter (`X86`, `Arm64`, `Delta`, …). |
+| `DeltaDistance` | `int` | `1` | Byte distance for the Delta filter (1–256). |
+
+Decompression is configured through `XzDecompressOptions` (`Threads`, `MaxOutputSize`).
 
 ### Preset dictionary sizes
 

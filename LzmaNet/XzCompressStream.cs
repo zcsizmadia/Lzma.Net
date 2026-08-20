@@ -32,6 +32,8 @@ public sealed class XzCompressStream : Stream
     private readonly int _blockSize;
     private readonly int _threads;
     private readonly List<(long unpaddedSize, long uncompressedSize)> _indexRecords;
+    private readonly ulong _filterId;
+    private readonly byte[]? _filterProps;
     private bool _headerWritten;
     private bool _finished;
     private bool _disposed;
@@ -61,6 +63,7 @@ public sealed class XzCompressStream : Stream
         _encoder = new Lzma2Encoder(props);
         _inputBuffer = new MemoryStream();
         _blockSize = opts.BlockSize ?? Math.Max(props.DictionarySize * 2, 1 << 20);
+        (_filterId, _filterProps) = opts.ResolvedFilter;
         _indexRecords = new List<(long, long)>();
     }
 
@@ -193,27 +196,41 @@ public sealed class XzCompressStream : Stream
     {
         if (_inputBuffer.Length == 0) return;
 
-        // Use GetBuffer + Length to avoid a full copy
-        var data = _inputBuffer.GetBuffer().AsMemory(0, (int)_inputBuffer.Length);
+        // Flush at most one block's worth of data so BlockSize is honored
+        // (blocks are the unit of parallel decompression and random access).
+        int len = (int)Math.Min(_inputBuffer.Length, _blockSize);
+        var data = _inputBuffer.GetBuffer().AsMemory(0, len);
 
         var (unpaddedSize, uncompressedSize) = XzBlock.WriteBlock(
-            _baseStream, data, _encoder, _checkType);
+            _baseStream, data, _encoder, _checkType, _filterId, _filterProps);
 
         _indexRecords.Add((unpaddedSize, uncompressedSize));
-        _inputBuffer.SetLength(0);
+        ShiftInputBuffer(len);
     }
 
     private async Task FlushBlockAsync(CancellationToken cancellationToken)
     {
         if (_inputBuffer.Length == 0) return;
 
-        var data = _inputBuffer.GetBuffer().AsMemory(0, (int)_inputBuffer.Length);
+        int len = (int)Math.Min(_inputBuffer.Length, _blockSize);
+        var data = _inputBuffer.GetBuffer().AsMemory(0, len);
 
         var (unpaddedSize, uncompressedSize) = await XzBlock.WriteBlockAsync(
-            _baseStream, data, _encoder, _checkType, cancellationToken).ConfigureAwait(false);
+            _baseStream, data, _encoder, _checkType, _filterId, _filterProps,
+            cancellationToken).ConfigureAwait(false);
 
         _indexRecords.Add((unpaddedSize, uncompressedSize));
-        _inputBuffer.SetLength(0);
+        ShiftInputBuffer(len);
+    }
+
+    private void ShiftInputBuffer(int consumed)
+    {
+        var buffer = _inputBuffer.GetBuffer();
+        int remaining = (int)_inputBuffer.Length - consumed;
+        if (remaining > 0)
+            Buffer.BlockCopy(buffer, consumed, buffer, 0, remaining);
+        _inputBuffer.SetLength(remaining);
+        _inputBuffer.Position = remaining;
     }
 
     private void FlushBlocksParallel()
@@ -244,7 +261,7 @@ public sealed class XzCompressStream : Stream
             {
                 var blockStream = new MemoryStream();
                 var (unpaddedSize, uncompressedSize) = XzBlock.WriteBlock(
-                    blockStream, blocks[i], encoder, _checkType);
+                    blockStream, blocks[i], encoder, _checkType, _filterId, _filterProps);
                 results[i] = (blockStream, unpaddedSize, uncompressedSize);
             }
             finally
@@ -300,7 +317,7 @@ public sealed class XzCompressStream : Stream
             {
                 var blockStream = new MemoryStream();
                 var (unpaddedSize, uncompressedSize) = XzBlock.WriteBlock(
-                    blockStream, blocks[i], encoder, _checkType);
+                    blockStream, blocks[i], encoder, _checkType, _filterId, _filterProps);
                 results[i] = (blockStream, unpaddedSize, uncompressedSize);
             }
             finally
