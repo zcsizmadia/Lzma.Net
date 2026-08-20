@@ -103,6 +103,13 @@ public sealed class XzCompressOptions
     public int DeltaDistance { get; set; } = 1;
 
     /// <summary>
+    /// Optional progress sink. Reports the cumulative number of uncompressed
+    /// bytes compressed so far, once per completed XZ block. Reports are made
+    /// from the thread performing the write, never from worker threads.
+    /// </summary>
+    public IProgress<long>? Progress { get; set; }
+
+    /// <summary>
     /// Returns a default options instance equivalent to <c>xz -6</c>.
     /// </summary>
     public static XzCompressOptions Default => new();

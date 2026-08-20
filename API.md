@@ -350,7 +350,7 @@ Configuration object for XZ compression. All properties have sensible defaults m
 public int Preset { get; set; } = 6;
 ```
 
-Compression level from 0 (fastest, largest) to 9 (slowest, smallest). Controls dictionary size and match-finder effort.
+Compression level from 0 (fastest, largest) to 9 (slowest, smallest). Controls dictionary size, match-finder choice, and parsing strategy: presets 0–2 are greedy, 3–6 use lazy matching (hash-chain finder), and 7–9 use the BT4 binary-tree finder with price-based optimal parsing for near-xz compression ratios at substantially lower speed.
 
 | Preset | Dictionary Size |
 |--------|----------------|
@@ -438,6 +438,18 @@ public int DeltaDistance { get; set; } = 1;
 ```
 
 Byte distance (1–256) for the `Delta` filter. Ignored for other filters.
+
+---
+
+#### Progress
+
+```csharp
+public IProgress<long>? Progress { get; set; }
+```
+
+Optional progress sink. Reports the cumulative number of uncompressed bytes
+compressed, once per completed XZ block, from the writing thread.
+(`XzDecompressOptions` has the equivalent property for decompression.)
 
 ---
 
@@ -530,8 +542,43 @@ Configuration for XZ decompression.
 |----------|------|---------|-------------|
 | `Threads` | `int` | `1` | `0` = all CPUs, `1` = single-threaded, `N` = up to N threads. Parallelism applies per XZ block. |
 | `MaxOutputSize` | `long` | `long.MaxValue` | Maximum total decompressed bytes before `LzmaMemoryLimitException` is thrown. Enforced **before** any allocation — protects against decompression bombs. For `XzSeekableStream`, applies per block. |
+| `Progress` | `IProgress<long>?` | `null` | Reports cumulative decompressed bytes, once per decoded block (or batch in parallel mode). |
 
 Used by `XzCompressor.Decompress(data, options)`, `new XzDecompressStream(stream, options, leaveOpen)`, and `XzSeekableStream`.
+
+---
+
+## LzmaAloneCompressStream / LzmaAloneDecompressStream
+
+```csharp
+public sealed class LzmaAloneCompressStream : Stream    // write-only
+public sealed class LzmaAloneDecompressStream : Stream  // read-only
+```
+
+Support for the **legacy `.lzma` ("LZMA-alone") format** — a 13-byte header
+(properties, dictionary size, uncompressed size) followed by a single raw LZMA
+stream. Compatible with 7-Zip and `xz --format=lzma`, including unknown-size
+streams terminated by the end marker. Prefer the XZ format for new applications:
+`.lzma` has no blocks, no integrity check, and no parallelism, so both streams
+process the whole payload in memory.
+
+```csharp
+public LzmaAloneCompressStream(Stream stream, int preset = 6, bool leaveOpen = false)
+public LzmaAloneDecompressStream(Stream stream, XzDecompressOptions? options = null, bool leaveOpen = false)
+```
+
+`XzDecompressOptions.MaxOutputSize` is honored (recommended for untrusted
+input); `Threads` is ignored (the format has no blocks).
+
+**Example:**
+
+```csharp
+using var input = File.OpenRead("archive.lzma");
+using var dec = new LzmaAloneDecompressStream(input,
+    new XzDecompressOptions { MaxOutputSize = 1L << 30 });
+using var output = File.Create("archive.bin");
+dec.CopyTo(output);
+```
 
 ---
 

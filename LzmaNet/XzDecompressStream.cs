@@ -26,6 +26,7 @@ public sealed class XzDecompressStream : Stream
     private readonly int _threads;
     private readonly long _maxOutputSize;
     private long _totalProduced;
+    private readonly IProgress<long>? _progress;
     private byte[]? _blockBuffer;
     private int _blockBufferPos;
     private int _blockBufferLen;
@@ -85,7 +86,14 @@ public sealed class XzDecompressStream : Stream
         opts.Validate();
         _threads = opts.ResolvedThreads;
         _maxOutputSize = opts.MaxOutputSize;
+        _progress = opts.Progress;
         _leaveOpen = leaveOpen;
+    }
+
+    private void AddProduced(long bytes)
+    {
+        _totalProduced += bytes;
+        _progress?.Report(_totalProduced);
     }
 
     private long RemainingAllowance()
@@ -254,7 +262,7 @@ public sealed class XzDecompressStream : Stream
                 continue;
             }
 
-            _totalProduced += uncompressedSize;
+            AddProduced(uncompressedSize);
             _blockRecords.Add((unpaddedSize, uncompressedSize));
 
             if (blockLength > 0)
@@ -339,7 +347,7 @@ public sealed class XzDecompressStream : Stream
                 }
                 throw new LzmaMemoryLimitException();
             }
-            _totalProduced += batchTotal;
+            AddProduced(batchTotal);
 
             foreach (var result in results)
                 _decodedBlocks.Enqueue(result);
@@ -480,7 +488,7 @@ public sealed class XzDecompressStream : Stream
                 continue;
             }
 
-            _totalProduced += block.UncompressedSize;
+            AddProduced(block.UncompressedSize);
             _blockRecords.Add((block.UnpaddedSize, block.UncompressedSize));
             if (block.Length > 0)
             {
@@ -570,7 +578,7 @@ public sealed class XzDecompressStream : Stream
                 }
                 throw new LzmaMemoryLimitException();
             }
-            _totalProduced += batchTotal;
+            AddProduced(batchTotal);
 
             foreach (var result in results)
                 _decodedBlocks.Enqueue(result);

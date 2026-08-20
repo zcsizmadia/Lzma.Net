@@ -35,7 +35,7 @@ internal sealed class LzmaEncoder : IDisposable
     private int _rep0, _rep1, _rep2, _rep3;
 
     // Match finder
-    private readonly HashChainMatchFinder _matchFinder;
+    private readonly IMatchFinder _matchFinder;
     private readonly LzmaEncoderProperties _props;
 
     // Length coder offsets
@@ -82,7 +82,9 @@ internal sealed class LzmaEncoder : IDisposable
         _matchLenProbs = new ushort[lenProbs];
         _repLenProbs = new ushort[lenProbs];
 
-        _matchFinder = new HashChainMatchFinder(props.DictionarySize, props.MatchMaxLen, props.CutValue);
+        _matchFinder = props.UseBinaryTree
+            ? new BinaryTreeMatchFinder(props.DictionarySize, props.MatchMaxLen, props.CutValue)
+            : new HashChainMatchFinder(props.DictionarySize, props.MatchMaxLen, props.CutValue);
 
         ResetState();
     }
@@ -161,6 +163,9 @@ internal sealed class LzmaEncoder : IDisposable
     public long EncodeChunk(ReadOnlySpan<byte> block, int chunkStart, int chunkLen, Stream output,
                             long sizeLimit = long.MaxValue)
     {
+        if (_props.OptimalParse)
+            return EncodeChunkOptimal(block, chunkStart, chunkLen, output, sizeLimit);
+
         var rc = new RangeEncoder(output);
         // The range encoder's cache mechanism (initialized with _cache=0, _cacheSize=1)
         // naturally outputs the 0x00 init byte during the first ShiftLow call.
@@ -330,10 +335,13 @@ internal sealed class LzmaEncoder : IDisposable
 
         for (int i = 0; i < numMatches; i++)
         {
-            if (_matchLengths[i] > bestLen ||
-                (_matchLengths[i] == bestLen && !isRep && _matchDistances[i] < bestDist))
+            // The finder may see past the chunk boundary (its window is fed the
+            // whole block); a symbol must not, so clamp the usable length.
+            int len = Math.Min(_matchLengths[i], maxLen);
+            if (len > bestLen ||
+                (len == bestLen && !isRep && _matchDistances[i] < bestDist))
             {
-                bestLen = _matchLengths[i];
+                bestLen = len;
                 bestDist = _matchDistances[i];
                 isRep = false;
             }
@@ -534,6 +542,512 @@ internal sealed class LzmaEncoder : IDisposable
 
         int bits = 31 - System.Numerics.BitOperations.LeadingZeroCount(dist);
         return (bits << 1) + (int)((dist >> (bits - 1)) & 1);
+    }
+
+    // ── Optimal parser ───────────────────────────────────────────────
+    // Price-based dynamic programming over a bounded window: every position in
+    // the window is a DP node holding the cheapest known way to reach it (in
+    // estimated range-coder bits) together with the LZMA state and rep
+    // distances that path produces. Transitions are single symbols: literal,
+    // short rep, rep match (any length), or normal match (any length, using
+    // the nearest distance the match finder reported for that length).
+    // Prices are estimates against the probabilities at window start (the
+    // standard approximation); parse choices never affect decodability, only
+    // compressed size.
+
+    private const int kNumOpts = 1 << 10;
+    private const uint kInfinityPrice = uint.MaxValue;
+
+    private struct OptNode
+    {
+        public uint Price;
+        public int PosPrev;
+        public int BackPrev; // -1 literal; 0..3 rep index; >= 4 match with dist = BackPrev - 4
+        public int State;
+        public int Rep0, Rep1, Rep2, Rep3;
+    }
+
+    private OptNode[]? _opt;
+    private int[]? _optMatchDist;  // [kNumOpts * (kMatchMaxLen + 1)] candidates per window offset
+    private int[]? _optMatchLen;
+    private int[]? _optMatchCount;
+    private int[]? _optOpsLen;     // backtracked ops
+    private int[]? _optOpsBack;
+
+    private void EnsureOptBuffers()
+    {
+        if (_opt != null)
+            return;
+        _opt = new OptNode[kNumOpts];
+        _optMatchDist = new int[kNumOpts * (LzmaConstants.kMatchMaxLen + 1)];
+        _optMatchLen = new int[kNumOpts * (LzmaConstants.kMatchMaxLen + 1)];
+        _optMatchCount = new int[kNumOpts];
+        _optOpsLen = new int[kNumOpts];
+        _optOpsBack = new int[kNumOpts];
+    }
+
+    private int GatherMatches(int cur)
+    {
+        int stride = LzmaConstants.kMatchMaxLen + 1;
+        int n = _matchFinder.FindMatches(
+            _optMatchDist.AsSpan(cur * stride, stride),
+            _optMatchLen.AsSpan(cur * stride, stride),
+            stride);
+        _optMatchCount![cur] = n;
+        return n;
+    }
+
+    private long EncodeChunkOptimal(ReadOnlySpan<byte> block, int chunkStart, int chunkLen,
+                                    Stream output, long sizeLimit)
+    {
+        var rc = new RangeEncoder(output);
+        int pos = chunkStart;
+        int chunkEnd = chunkStart + chunkLen;
+        bool limited = sizeLimit != long.MaxValue;
+        int niceLen = Math.Min(_props.NiceLength, LzmaConstants.kMatchMaxLen);
+        EnsureOptBuffers();
+        var opt = _opt!;
+        int stride = LzmaConstants.kMatchMaxLen + 1;
+
+        while (pos < chunkEnd)
+        {
+            long producedBytes = rc.BytesWritten;
+            if (producedBytes >= sizeLimit
+                || (limited && producedBytes >= pos - chunkStart && pos - chunkStart >= 16384))
+            {
+                _matchFinder.Skip(chunkEnd - pos);
+                return -1;
+            }
+
+            int posState = pos & _posMask;
+
+            if (_matchFinder.Available < 2)
+            {
+                rc.EncodeBit(ref _isMatch[(_state << LzmaConstants.kNumPosStatesBitsMax) + posState], 0);
+                EncodeLiteral(rc, block, block[pos], pos > 0 ? block[pos - 1] : (byte)0, pos);
+                _matchFinder.MovePos();
+                pos++;
+                continue;
+            }
+
+            // Gather candidates at pos (window offset 0). The finder inserts the
+            // position but does not advance.
+            int numMatches = GatherMatches(0);
+            int maxAtPos = Math.Min(LzmaConstants.kMatchMaxLen, chunkEnd - pos);
+
+            int bestLen = 1, bestDist = 0, bestRepIndex = -1;
+            bool bestIsRep = false;
+            EvaluateRepCandidates(block, pos, maxAtPos, _rep0, _rep1, _rep2, _rep3,
+                ref bestLen, ref bestDist, ref bestIsRep, ref bestRepIndex);
+            for (int i = 0; i < numMatches; i++)
+            {
+                int len = Math.Min(_optMatchLen![i], maxAtPos);
+                if (len > bestLen)
+                {
+                    bestLen = len;
+                    bestDist = _optMatchDist![i];
+                    bestIsRep = false;
+                }
+            }
+
+            if (bestLen < LzmaConstants.kMatchMinLen)
+            {
+                rc.EncodeBit(ref _isMatch[(_state << LzmaConstants.kNumPosStatesBitsMax) + posState], 0);
+                EncodeLiteral(rc, block, block[pos], pos > 0 ? block[pos - 1] : (byte)0, pos);
+                _matchFinder.MovePos();
+                pos++;
+                continue;
+            }
+
+            if (bestLen >= niceLen || bestLen == chunkEnd - pos)
+            {
+                // Long enough (or fills the chunk) — take it without a parse.
+                EmitOp(rc, block, ref pos, bestIsRep ? bestRepIndex : bestDist + 4, bestLen,
+                    literal: false);
+                _matchFinder.Skip(bestLen);
+                continue;
+            }
+
+            // ---- Dynamic program over the window ----
+            int cap = Math.Min(kNumOpts - 1, chunkEnd - pos);
+            for (int i = 1; i <= cap; i++)
+                opt[i].Price = kInfinityPrice;
+            opt[0] = new OptNode
+            {
+                Price = 0,
+                PosPrev = -1,
+                BackPrev = -2,
+                State = _state,
+                Rep0 = _rep0,
+                Rep1 = _rep1,
+                Rep2 = _rep2,
+                Rep3 = _rep3,
+            };
+
+            int lenEnd = 0;
+            RelaxFrom(block, pos, 0, cap, ref lenEnd);
+
+            int lastRead = 0; // highest window offset the finder has visited
+            for (int cur = 1; cur < lenEnd; cur++)
+            {
+                _matchFinder.MovePos();
+                lastRead = cur;
+
+                int n = 0;
+                if (_matchFinder.Available >= 2)
+                    n = GatherMatches(cur);
+                else
+                    _optMatchCount![cur] = 0;
+
+                // Nice-length shortcut: a long match truncates the parse.
+                if (n > 0)
+                {
+                    int longest = _optMatchLen![cur * stride + n - 1];
+                    if (longest >= niceLen)
+                    {
+                        RelaxFrom(block, pos, cur, cap, ref lenEnd);
+                        int t = Math.Min(cur + longest, cap);
+                        lenEnd = t;
+                        break;
+                    }
+                }
+
+                RelaxFrom(block, pos, cur, cap, ref lenEnd);
+            }
+
+            // ---- Backtrack and emit ----
+            int opsCount = 0;
+            int node = lenEnd;
+            while (node > 0)
+            {
+                _optOpsLen![opsCount] = node - opt[node].PosPrev;
+                _optOpsBack![opsCount] = opt[node].BackPrev;
+                opsCount++;
+                node = opt[node].PosPrev;
+            }
+
+            for (int i = opsCount - 1; i >= 0; i--)
+            {
+                int back = _optOpsBack![i];
+                int len = _optOpsLen![i];
+                EmitOp(rc, block, ref pos, back == -1 ? -1 : back, len, literal: back == -1);
+            }
+
+            // Sync the finder: positions pos0..pos0+lastRead were visited; the
+            // path consumed lenEnd bytes total.
+            _matchFinder.Skip(lenEnd - lastRead);
+        }
+
+        rc.FlushData();
+        return rc.BytesWritten;
+    }
+
+    /// <summary>Emits one parsed operation, updating encoder state and reps.</summary>
+    private void EmitOp(RangeEncoder rc, ReadOnlySpan<byte> block, ref int pos,
+                        int back, int len, bool literal)
+    {
+        int posState = pos & _posMask;
+        if (literal)
+        {
+            rc.EncodeBit(ref _isMatch[(_state << LzmaConstants.kNumPosStatesBitsMax) + posState], 0);
+            EncodeLiteral(rc, block, block[pos], pos > 0 ? block[pos - 1] : (byte)0, pos);
+            pos++;
+            return;
+        }
+
+        rc.EncodeBit(ref _isMatch[(_state << LzmaConstants.kNumPosStatesBitsMax) + posState], 1);
+        if (back < 4)
+        {
+            rc.EncodeBit(ref _isRep[_state], 1);
+            EncodeRepMatch(rc, back, len, posState);
+        }
+        else
+        {
+            rc.EncodeBit(ref _isRep[_state], 0);
+            EncodeMatch(rc, back - 4, len, posState);
+        }
+        pos += len;
+    }
+
+    private void EvaluateRepCandidates(ReadOnlySpan<byte> block, int absPos, int maxLen,
+        int rep0, int rep1, int rep2, int rep3,
+        ref int bestLen, ref int bestDist, ref bool bestIsRep, ref int bestRepIndex)
+    {
+        Span<int> reps = stackalloc int[4] { rep0, rep1, rep2, rep3 };
+        for (int i = 0; i < 4; i++)
+        {
+            int len = GetRepMatchLen(block, absPos, reps[i], maxLen);
+            if (len >= LzmaConstants.kMatchMinLen && len > bestLen)
+            {
+                bestLen = len;
+                bestDist = reps[i];
+                bestIsRep = true;
+                bestRepIndex = i;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Relaxes all outgoing edges of DP node <paramref name="cur"/>.
+    /// </summary>
+    private void RelaxFrom(ReadOnlySpan<byte> block, int pos0, int cur, int cap, ref int lenEnd)
+    {
+        var opt = _opt!;
+        ref OptNode from = ref opt[cur];
+        if (from.Price == kInfinityPrice)
+            return;
+
+        int absPos = pos0 + cur;
+        int posState = absPos & _posMask;
+        int state = from.State;
+        uint cp = from.Price;
+
+        uint isMatchProb = _isMatch[(state << LzmaConstants.kNumPosStatesBitsMax) + posState];
+        uint price0 = cp + Price.GetPrice0(isMatchProb);
+        uint priceMatchBit = cp + Price.GetPrice1(isMatchProb);
+
+        // Literal
+        if (cur + 1 <= cap)
+        {
+            uint litPrice = price0 + PriceLiteral(block, absPos, state, from.Rep0);
+            ref OptNode to = ref opt[cur + 1];
+            if (litPrice < to.Price)
+            {
+                to.Price = litPrice;
+                to.PosPrev = cur;
+                to.BackPrev = -1;
+                to.State = LzmaConstants.StateUpdateLiteral(state);
+                to.Rep0 = from.Rep0;
+                to.Rep1 = from.Rep1;
+                to.Rep2 = from.Rep2;
+                to.Rep3 = from.Rep3;
+                if (cur + 1 > lenEnd) lenEnd = cur + 1;
+            }
+        }
+
+        uint priceRep = priceMatchBit + Price.GetPrice1(_isRep[state]);
+
+        // Short rep (rep0, length 1)
+        if (cur + 1 <= cap && from.Rep0 >= 0 && from.Rep0 < absPos
+            && block[absPos - from.Rep0 - 1] == block[absPos])
+        {
+            uint p = priceRep
+                + Price.GetPrice0(_isRepG0[state])
+                + Price.GetPrice0(_isRep0Long[(state << LzmaConstants.kNumPosStatesBitsMax) + posState]);
+            ref OptNode to = ref opt[cur + 1];
+            if (p < to.Price)
+            {
+                to.Price = p;
+                to.PosPrev = cur;
+                to.BackPrev = 0; // rep0, len 1 == short rep
+                to.State = LzmaConstants.StateUpdateShortRep(state);
+                to.Rep0 = from.Rep0;
+                to.Rep1 = from.Rep1;
+                to.Rep2 = from.Rep2;
+                to.Rep3 = from.Rep3;
+                if (cur + 1 > lenEnd) lenEnd = cur + 1;
+            }
+        }
+
+        int maxLen = Math.Min(LzmaConstants.kMatchMaxLen, cap - cur);
+        if (maxLen < LzmaConstants.kMatchMinLen)
+            return;
+
+        // Rep matches (all lengths)
+        Span<int> reps = stackalloc int[4] { from.Rep0, from.Rep1, from.Rep2, from.Rep3 };
+        for (int i = 0; i < 4; i++)
+        {
+            int repLen = GetRepMatchLen(block, absPos, reps[i], maxLen);
+            if (repLen < LzmaConstants.kMatchMinLen)
+                continue;
+
+            uint prefix = priceRep + PriceRepIndexBits(i, state, posState);
+            int newState = LzmaConstants.StateUpdateLongRep(state);
+            (int r0, int r1, int r2, int r3) = RotateReps(reps, i);
+
+            for (int len = LzmaConstants.kMatchMinLen; len <= repLen; len++)
+            {
+                uint p = prefix + PriceLen(_repLenProbs, posState, len);
+                ref OptNode to = ref opt[cur + len];
+                if (p < to.Price)
+                {
+                    to.Price = p;
+                    to.PosPrev = cur;
+                    to.BackPrev = i;
+                    to.State = newState;
+                    to.Rep0 = r0;
+                    to.Rep1 = r1;
+                    to.Rep2 = r2;
+                    to.Rep3 = r3;
+                    if (cur + len > lenEnd) lenEnd = cur + len;
+                }
+            }
+        }
+
+        // Normal matches (all lengths; nearest distance per length tier)
+        int count = _optMatchCount![cur];
+        if (count == 0)
+            return;
+
+        uint priceMatch = priceMatchBit + Price.GetPrice0(_isRep[state]);
+        int newStateMatch = LzmaConstants.StateUpdateMatch(state);
+        int strideBase = cur * (LzmaConstants.kMatchMaxLen + 1);
+        int startLen = LzmaConstants.kMatchMinLen;
+        Span<uint> slotPrice = stackalloc uint[LzmaConstants.kNumLenToPosStates];
+
+        for (int k = 0; k < count; k++)
+        {
+            int candLen = Math.Min(_optMatchLen![strideBase + k], maxLen);
+            int dist = _optMatchDist![strideBase + k];
+            if (candLen < startLen)
+                continue;
+
+            // Distance footer price is length-independent; the slot-tree price
+            // depends only on lenToPosState (4 values), cached lazily.
+            uint footer = PriceDistFooter(dist);
+            slotPrice.Fill(kInfinityPrice);
+
+            for (int len = startLen; len <= candLen; len++)
+            {
+                int lps = LzmaConstants.GetLenToPosState(len);
+                if (slotPrice[lps] == kInfinityPrice)
+                    slotPrice[lps] = PriceDistSlot(lps, dist);
+
+                uint p = priceMatch + PriceLen(_matchLenProbs, posState, len)
+                       + slotPrice[lps] + footer;
+                ref OptNode to = ref opt[cur + len];
+                if (p < to.Price)
+                {
+                    to.Price = p;
+                    to.PosPrev = cur;
+                    to.BackPrev = dist + 4;
+                    to.State = newStateMatch;
+                    to.Rep0 = dist;
+                    to.Rep1 = reps[0];
+                    to.Rep2 = reps[1];
+                    to.Rep3 = reps[2];
+                    if (cur + len > lenEnd) lenEnd = cur + len;
+                }
+            }
+            startLen = candLen + 1;
+        }
+    }
+
+    private static (int, int, int, int) RotateReps(ReadOnlySpan<int> reps, int index)
+    {
+        return index switch
+        {
+            0 => (reps[0], reps[1], reps[2], reps[3]),
+            1 => (reps[1], reps[0], reps[2], reps[3]),
+            2 => (reps[2], reps[0], reps[1], reps[3]),
+            _ => (reps[3], reps[0], reps[1], reps[2]),
+        };
+    }
+
+    // ── Price helpers ────────────────────────────────────────────────
+
+    private uint PriceLiteral(ReadOnlySpan<byte> block, int absPos, int state, int rep0)
+    {
+        byte prevByte = absPos > 0 ? block[absPos - 1] : (byte)0;
+        int litState = ((absPos & _litPosMask) << _lc) + (prevByte >> (8 - _lc));
+        int offset = litState * LzmaConstants.kLitSubcoderSize;
+        byte symbol = block[absPos];
+
+        uint price = 0;
+        uint m = 1;
+        if (!LzmaConstants.StateIsLiteral(state) && rep0 >= 0 && rep0 < absPos)
+        {
+            byte matchByte = block[absPos - rep0 - 1];
+            for (int i = 7; i >= 0; i--)
+            {
+                uint matchBit = (uint)(matchByte >> i) & 1;
+                uint bit = (uint)(symbol >> i) & 1;
+                price += Price.GetPrice(_litProbs[offset + ((1 + matchBit) << 8) + m], bit);
+                m = (m << 1) | bit;
+                if (matchBit != bit)
+                {
+                    i--;
+                    for (; i >= 0; i--)
+                    {
+                        bit = (uint)(symbol >> i) & 1;
+                        price += Price.GetPrice(_litProbs[offset + m], bit);
+                        m = (m << 1) | bit;
+                    }
+                    return price;
+                }
+            }
+            return price;
+        }
+
+        for (int i = 7; i >= 0; i--)
+        {
+            uint bit = (uint)(symbol >> i) & 1;
+            price += Price.GetPrice(_litProbs[offset + m], bit);
+            m = (m << 1) | bit;
+        }
+        return price;
+    }
+
+    private uint PriceLen(ushort[] lenProbs, int posState, int len)
+    {
+        int l = len - LzmaConstants.kMatchMinLen;
+        if (l < LzmaConstants.kNumLowLenSymbols)
+        {
+            return Price.GetPrice0(lenProbs[kLenChoice])
+                 + Price.GetBitTreePrice(lenProbs, kLenLow + (posState << LzmaConstants.kNumLowLenBits),
+                     LzmaConstants.kNumLowLenBits, (uint)l);
+        }
+        if (l < LzmaConstants.kNumLowLenSymbols + LzmaConstants.kNumMidLenSymbols)
+        {
+            return Price.GetPrice1(lenProbs[kLenChoice])
+                 + Price.GetPrice0(lenProbs[kLenChoice2])
+                 + Price.GetBitTreePrice(lenProbs, LenMid + (posState << LzmaConstants.kNumMidLenBits),
+                     LzmaConstants.kNumMidLenBits,
+                     (uint)(l - LzmaConstants.kNumLowLenSymbols));
+        }
+        return Price.GetPrice1(lenProbs[kLenChoice])
+             + Price.GetPrice1(lenProbs[kLenChoice2])
+             + Price.GetBitTreePrice(lenProbs, LenHigh, LzmaConstants.kNumHighLenBits,
+                 (uint)(l - LzmaConstants.kNumLowLenSymbols - LzmaConstants.kNumMidLenSymbols));
+    }
+
+    private uint PriceRepIndexBits(int repIndex, int state, int posState)
+    {
+        if (repIndex == 0)
+        {
+            return Price.GetPrice0(_isRepG0[state])
+                 + Price.GetPrice1(_isRep0Long[(state << LzmaConstants.kNumPosStatesBitsMax) + posState]);
+        }
+        uint price = Price.GetPrice1(_isRepG0[state]);
+        if (repIndex == 1)
+            return price + Price.GetPrice0(_isRepG1[state]);
+        price += Price.GetPrice1(_isRepG1[state]);
+        return price + Price.GetPrice(_isRepG2[state], (uint)(repIndex == 3 ? 1 : 0));
+    }
+
+    private uint PriceDistSlot(int lenToPosState, int dist)
+    {
+        int slot = GetPosSlot((uint)dist);
+        return Price.GetBitTreePrice(_posSlotCoders, lenToPosState * LzmaConstants.kNumPosSlots,
+            LzmaConstants.kNumPosSlotBits, (uint)slot);
+    }
+
+    private uint PriceDistFooter(int dist)
+    {
+        int slot = GetPosSlot((uint)dist);
+        if (slot < LzmaConstants.kStartPosModelIndex)
+            return 0;
+
+        int numDirectBits = (slot >> 1) - 1;
+        uint baseVal = (uint)((2 | (slot & 1)) << numDirectBits);
+        if (slot < LzmaConstants.kEndPosModelIndex)
+        {
+            return Price.GetReverseBitTreePrice(_posSpecProbs, (int)baseVal - slot - 1,
+                numDirectBits, (uint)dist - baseVal);
+        }
+        return Price.GetDirectBitsPrice(numDirectBits - LzmaConstants.kNumAlignBits)
+             + Price.GetReverseBitTreePrice(_alignProbs, 0, LzmaConstants.kNumAlignBits,
+                 (uint)dist & LzmaConstants.kAlignMask);
     }
 
     public void Dispose()
