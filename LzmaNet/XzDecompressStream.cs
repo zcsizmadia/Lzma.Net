@@ -443,6 +443,35 @@ public sealed class XzDecompressStream : Stream
                 continue;
             }
 
+            if (_threads > 1)
+            {
+                // Parallel mode: read raw blocks asynchronously in batches and
+                // decode them concurrently (mirrors the sync path).
+                if (_decodedBlocks.Count == 0 && !_indexIndicatorSeen)
+                    await FillDecodedBlocksAsync(cancellationToken).ConfigureAwait(false);
+
+                if (_decodedBlocks.Count == 0)
+                {
+                    _allBlocksRead = true;
+                    continue;
+                }
+
+                XzBlock.BlockBufferResult decoded = _decodedBlocks.Dequeue();
+                _blockRecords.Add((decoded.UnpaddedSize, decoded.UncompressedSize));
+
+                if (decoded.Length > 0)
+                {
+                    _blockBuffer = decoded.Buffer;
+                    _blockBufferLen = decoded.Length;
+                    _blockBufferPos = 0;
+                }
+                else if (decoded.Buffer != null)
+                {
+                    ArrayPool<byte>.Shared.Return(decoded.Buffer);
+                }
+                continue;
+            }
+
             XzBlock.BlockBufferResult block = await XzBlock.ReadBlockToBufferAsync(
                 _baseStream, _checkType, RemainingAllowance(), cancellationToken).ConfigureAwait(false);
             if (!block.HasBlock)
@@ -466,6 +495,91 @@ public sealed class XzDecompressStream : Stream
         }
 
         return totalCopied;
+    }
+
+    /// <summary>
+    /// Async counterpart of <see cref="FillDecodedBlocks"/>: reads up to
+    /// <see cref="_threads"/> raw blocks asynchronously (sequential I/O), then
+    /// decodes them concurrently, queueing the results in stream order.
+    /// </summary>
+    private async ValueTask FillDecodedBlocksAsync(CancellationToken cancellationToken)
+    {
+        var rawBlocks = new List<MemoryStream>();
+        try
+        {
+            while (rawBlocks.Count < _threads)
+            {
+                MemoryStream? raw = await XzBlock.ReadRawBlockAsync(
+                    _baseStream, _checkType, cancellationToken).ConfigureAwait(false);
+                if (raw == null)
+                {
+                    _indexIndicatorSeen = true;
+                    break;
+                }
+                rawBlocks.Add(raw);
+            }
+
+            if (rawBlocks.Count == 0)
+                return;
+
+            var results = new XzBlock.BlockBufferResult[rawBlocks.Count];
+            long allowance = RemainingAllowance();
+
+            if (rawBlocks.Count == 1)
+            {
+                results[0] = DecodeRawBlock(rawBlocks[0], _checkType, allowance);
+            }
+            else
+            {
+                int checkType = _checkType;
+                var tasks = new Task[rawBlocks.Count];
+                for (int i = 0; i < rawBlocks.Count; i++)
+                {
+                    int index = i;
+                    tasks[i] = Task.Run(
+                        () => results[index] = DecodeRawBlock(rawBlocks[index], checkType, allowance),
+                        cancellationToken);
+                }
+
+                try
+                {
+                    // Awaiting WhenAll rethrows the first inner exception directly.
+                    await Task.WhenAll(tasks).ConfigureAwait(false);
+                }
+                catch
+                {
+                    foreach (var result in results)
+                    {
+                        if (result.Buffer != null)
+                            ArrayPool<byte>.Shared.Return(result.Buffer);
+                    }
+                    throw;
+                }
+            }
+
+            // Enforce the cumulative limit across the batch.
+            long batchTotal = 0;
+            foreach (var result in results)
+                batchTotal += result.UncompressedSize;
+            if (batchTotal > allowance)
+            {
+                foreach (var result in results)
+                {
+                    if (result.Buffer != null)
+                        ArrayPool<byte>.Shared.Return(result.Buffer);
+                }
+                throw new LzmaMemoryLimitException();
+            }
+            _totalProduced += batchTotal;
+
+            foreach (var result in results)
+                _decodedBlocks.Enqueue(result);
+        }
+        finally
+        {
+            foreach (var raw in rawBlocks)
+                raw.Dispose();
+        }
     }
 
     /// <summary>

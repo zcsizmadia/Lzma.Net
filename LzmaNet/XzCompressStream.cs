@@ -113,10 +113,12 @@ public sealed class XzCompressStream : Stream
         }
         else
         {
-            // For multi-threaded mode, flush when we have enough blocks to parallelize
-            while (_inputBuffer.Length >= _blockSize * _threads)
+            // Pipeline: start encoding each block as soon as it is complete;
+            // the in-flight bound blocks on (and writes out) the oldest block,
+            // overlapping writing with encoding.
+            while (_inputBuffer.Length >= _blockSize)
             {
-                FlushBlocksParallel();
+                EnqueueBlock();
             }
         }
     }
@@ -163,9 +165,9 @@ public sealed class XzCompressStream : Stream
         }
         else
         {
-            while (_inputBuffer.Length >= _blockSize * _threads)
+            while (_inputBuffer.Length >= _blockSize)
             {
-                await FlushBlocksParallelAsync(cancellationToken).ConfigureAwait(false);
+                await EnqueueBlockAsync(cancellationToken).ConfigureAwait(false);
             }
         }
     }
@@ -233,118 +235,81 @@ public sealed class XzCompressStream : Stream
         _inputBuffer.Position = remaining;
     }
 
-    private void FlushBlocksParallel()
+    // ── Multi-threaded pipeline ─────────────────────────────────────
+    // Each full block is copied out of the input buffer and encoded on a
+    // worker task; at most _threads encodes are in flight. When the bound is
+    // reached, the OLDEST block is awaited and written out while the newer
+    // ones keep encoding, so writing overlaps encoding and blocks stream out
+    // in order. Output is byte-identical to single-threaded compression.
+
+    private readonly List<Task<EncodedBlock>> _inFlight = new();
+
+    private readonly record struct EncodedBlock(
+        MemoryStream Data, long UnpaddedSize, long UncompressedSize);
+
+    private Task<EncodedBlock> StartBlockEncode()
     {
-        if (_inputBuffer.Length == 0) return;
+        int len = (int)Math.Min(_inputBuffer.Length, _blockSize);
+        byte[] rented = System.Buffers.ArrayPool<byte>.Shared.Rent(len);
+        _inputBuffer.GetBuffer().AsSpan(0, len).CopyTo(rented);
+        ShiftInputBuffer(len);
 
-        var buffer = _inputBuffer.GetBuffer();
-        int totalLen = (int)_inputBuffer.Length;
+        var props = _props;
+        int checkType = _checkType;
+        ulong filterId = _filterId;
+        byte[]? filterProps = _filterProps;
 
-        // Split into block slices over the input buffer. No copies are needed:
-        // encoders only read, and the buffer is not mutated until after the
-        // parallel loop completes.
-        var blocks = new List<ReadOnlyMemory<byte>>();
-        int pos = 0;
-        while (pos < totalLen && blocks.Count < _threads)
+        return Task.Run(() =>
         {
-            int len = Math.Min(totalLen - pos, _blockSize);
-            blocks.Add(buffer.AsMemory(pos, len));
-            pos += len;
-        }
-
-        // Compress blocks in parallel — each produces a complete XZ block
-        var results = new (MemoryStream blockData, long unpaddedSize, long uncompressedSize)[blocks.Count];
-        Parallel.For(0, blocks.Count, new ParallelOptions { MaxDegreeOfParallelism = _threads }, i =>
-        {
-            var encoder = new Lzma2Encoder(_props);
             try
             {
+                using var encoder = new Lzma2Encoder(props);
                 var blockStream = new MemoryStream();
                 var (unpaddedSize, uncompressedSize) = XzBlock.WriteBlock(
-                    blockStream, blocks[i], encoder, _checkType, _filterId, _filterProps);
-                results[i] = (blockStream, unpaddedSize, uncompressedSize);
+                    blockStream, rented.AsMemory(0, len), encoder, checkType,
+                    filterId, filterProps);
+                return new EncodedBlock(blockStream, unpaddedSize, uncompressedSize);
             }
             finally
             {
-                encoder.Dispose();
+                System.Buffers.ArrayPool<byte>.Shared.Return(rented);
             }
         });
-
-        // Write blocks sequentially to output (XZ requires sequential block order)
-        foreach (var (blockData, unpaddedSize, uncompressedSize) in results)
-        {
-            using (blockData)
-            {
-                blockData.Position = 0;
-                blockData.CopyTo(_baseStream);
-                _indexRecords.Add((unpaddedSize, uncompressedSize));
-            }
-        }
-
-        // Shift remaining data to front
-        int remaining = totalLen - pos;
-        if (remaining > 0)
-        {
-            Buffer.BlockCopy(buffer, pos, buffer, 0, remaining);
-        }
-        _inputBuffer.SetLength(remaining);
-        _inputBuffer.Position = remaining;
     }
 
-    private async Task FlushBlocksParallelAsync(CancellationToken cancellationToken)
+    private void EnqueueBlock()
     {
-        if (_inputBuffer.Length == 0) return;
+        if (_inFlight.Count >= _threads)
+            CompleteOldestBlock();
+        _inFlight.Add(StartBlockEncode());
+    }
 
-        var buffer = _inputBuffer.GetBuffer();
-        int totalLen = (int)_inputBuffer.Length;
+    private async Task EnqueueBlockAsync(CancellationToken cancellationToken)
+    {
+        if (_inFlight.Count >= _threads)
+            await CompleteOldestBlockAsync(cancellationToken).ConfigureAwait(false);
+        _inFlight.Add(StartBlockEncode());
+    }
 
-        // Split into block slices over the input buffer (no copies; see sync variant).
-        var blocks = new List<ReadOnlyMemory<byte>>();
-        int pos = 0;
-        while (pos < totalLen && blocks.Count < _threads)
-        {
-            int len = Math.Min(totalLen - pos, _blockSize);
-            blocks.Add(buffer.AsMemory(pos, len));
-            pos += len;
-        }
+    private void CompleteOldestBlock()
+    {
+        Task<EncodedBlock> task = _inFlight[0];
+        _inFlight.RemoveAt(0);
+        EncodedBlock block = task.GetAwaiter().GetResult();
+        using MemoryStream data = block.Data;
+        _baseStream.Write(data.GetBuffer(), 0, (int)data.Length);
+        _indexRecords.Add((block.UnpaddedSize, block.UncompressedSize));
+    }
 
-        // Compress blocks in parallel (CPU-bound, stays sync)
-        var results = new (MemoryStream blockData, long unpaddedSize, long uncompressedSize)[blocks.Count];
-        Parallel.For(0, blocks.Count, new ParallelOptions { MaxDegreeOfParallelism = _threads }, i =>
-        {
-            var encoder = new Lzma2Encoder(_props);
-            try
-            {
-                var blockStream = new MemoryStream();
-                var (unpaddedSize, uncompressedSize) = XzBlock.WriteBlock(
-                    blockStream, blocks[i], encoder, _checkType, _filterId, _filterProps);
-                results[i] = (blockStream, unpaddedSize, uncompressedSize);
-            }
-            finally
-            {
-                encoder.Dispose();
-            }
-        });
-
-        // Write blocks sequentially to output async
-        foreach (var (blockData, unpaddedSize, uncompressedSize) in results)
-        {
-            using (blockData)
-            {
-                blockData.Position = 0;
-                await blockData.CopyToAsync(_baseStream, cancellationToken).ConfigureAwait(false);
-                _indexRecords.Add((unpaddedSize, uncompressedSize));
-            }
-        }
-
-        // Shift remaining data to front
-        int remaining = totalLen - pos;
-        if (remaining > 0)
-        {
-            Buffer.BlockCopy(buffer, pos, buffer, 0, remaining);
-        }
-        _inputBuffer.SetLength(remaining);
-        _inputBuffer.Position = remaining;
+    private async Task CompleteOldestBlockAsync(CancellationToken cancellationToken)
+    {
+        Task<EncodedBlock> task = _inFlight[0];
+        _inFlight.RemoveAt(0);
+        EncodedBlock block = await task.ConfigureAwait(false);
+        using MemoryStream data = block.Data;
+        await _baseStream.WriteAsync(data.GetBuffer().AsMemory(0, (int)data.Length),
+            cancellationToken).ConfigureAwait(false);
+        _indexRecords.Add((block.UnpaddedSize, block.UncompressedSize));
     }
 
     private void Finalize_()
@@ -354,14 +319,17 @@ public sealed class XzCompressStream : Stream
 
         EnsureHeader();
 
-        // Flush remaining data
-        if (_inputBuffer.Length > 0)
+        // Flush remaining data: enqueue any remaining full blocks, drain the
+        // pipeline in order, then write the final partial block.
+        if (_threads > 1)
         {
-            if (_threads > 1 && _inputBuffer.Length > _blockSize)
-                FlushBlocksParallel();
-            while (_inputBuffer.Length > 0)
-                FlushBlock();
+            while (_inputBuffer.Length >= _blockSize)
+                EnqueueBlock();
+            while (_inFlight.Count > 0)
+                CompleteOldestBlock();
         }
+        while (_inputBuffer.Length > 0)
+            FlushBlock();
 
         // Write index
         long indexSize = XzIndex.WriteIndex(_baseStream, _indexRecords);
@@ -381,14 +349,17 @@ public sealed class XzCompressStream : Stream
 
         await EnsureHeaderAsync(cancellationToken).ConfigureAwait(false);
 
-        // Flush remaining data
-        if (_inputBuffer.Length > 0)
+        // Flush remaining data: enqueue any remaining full blocks, drain the
+        // pipeline in order, then write the final partial block.
+        if (_threads > 1)
         {
-            if (_threads > 1 && _inputBuffer.Length > _blockSize)
-                await FlushBlocksParallelAsync(cancellationToken).ConfigureAwait(false);
-            while (_inputBuffer.Length > 0)
-                await FlushBlockAsync(cancellationToken).ConfigureAwait(false);
+            while (_inputBuffer.Length >= _blockSize)
+                await EnqueueBlockAsync(cancellationToken).ConfigureAwait(false);
+            while (_inFlight.Count > 0)
+                await CompleteOldestBlockAsync(cancellationToken).ConfigureAwait(false);
         }
+        while (_inputBuffer.Length > 0)
+            await FlushBlockAsync(cancellationToken).ConfigureAwait(false);
 
         // Write index
         long indexSize = await XzIndex.WriteIndexAsync(_baseStream, _indexRecords, cancellationToken)
