@@ -1,4 +1,4 @@
-BSD Zero Clause License (0BSD)
+BSD Zero Clause License
 
 Copyright (c) 2026 Zoltan Csizmadia
 
@@ -12,10 +12,3 @@ INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
 LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
 OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
-
----
-
-This library is a pure C# port of liblzma from XZ Utils 5.8.3
-(https://xz.tukaani.org/xz-utils/), which is likewise licensed under the
-BSD Zero Clause License (0BSD). No attribution to the original authors is
-legally required by 0BSD; this note is provided as a courtesy.

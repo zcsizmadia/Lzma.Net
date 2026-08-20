@@ -34,6 +34,8 @@ public sealed class XzCompressStream : Stream
     private readonly List<(long unpaddedSize, long uncompressedSize)> _indexRecords;
     private readonly ulong _filterId;
     private readonly byte[]? _filterProps;
+    private readonly IProgress<long>? _progress;
+    private long _totalUncompressed;
     private bool _headerWritten;
     private bool _finished;
     private bool _disposed;
@@ -64,6 +66,7 @@ public sealed class XzCompressStream : Stream
         _inputBuffer = new MemoryStream();
         _blockSize = opts.BlockSize ?? Math.Max(props.DictionarySize * 2, 1 << 20);
         (_filterId, _filterProps) = opts.ResolvedFilter;
+        _progress = opts.Progress;
         _indexRecords = new List<(long, long)>();
     }
 
@@ -208,6 +211,7 @@ public sealed class XzCompressStream : Stream
 
         _indexRecords.Add((unpaddedSize, uncompressedSize));
         ShiftInputBuffer(len);
+        ReportProgress(uncompressedSize);
     }
 
     private async Task FlushBlockAsync(CancellationToken cancellationToken)
@@ -223,6 +227,13 @@ public sealed class XzCompressStream : Stream
 
         _indexRecords.Add((unpaddedSize, uncompressedSize));
         ShiftInputBuffer(len);
+        ReportProgress(uncompressedSize);
+    }
+
+    private void ReportProgress(long uncompressedBytes)
+    {
+        _totalUncompressed += uncompressedBytes;
+        _progress?.Report(_totalUncompressed);
     }
 
     private void ShiftInputBuffer(int consumed)
@@ -299,6 +310,7 @@ public sealed class XzCompressStream : Stream
         using MemoryStream data = block.Data;
         _baseStream.Write(data.GetBuffer(), 0, (int)data.Length);
         _indexRecords.Add((block.UnpaddedSize, block.UncompressedSize));
+        ReportProgress(block.UncompressedSize);
     }
 
     private async Task CompleteOldestBlockAsync(CancellationToken cancellationToken)
@@ -310,6 +322,7 @@ public sealed class XzCompressStream : Stream
         await _baseStream.WriteAsync(data.GetBuffer().AsMemory(0, (int)data.Length),
             cancellationToken).ConfigureAwait(false);
         _indexRecords.Add((block.UnpaddedSize, block.UncompressedSize));
+        ReportProgress(block.UncompressedSize);
     }
 
     private void Finalize_()

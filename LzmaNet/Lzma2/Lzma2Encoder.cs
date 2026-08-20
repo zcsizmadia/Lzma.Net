@@ -59,6 +59,13 @@ internal sealed class Lzma2Encoder : IDisposable
         _encoder.ResetState();
         _encoder.ResetDictionary();
 
+        // Feed the whole block to the match finder up front. The binary-tree
+        // finder REQUIRES this: its early subtree adoption assumes the length
+        // limit never grows for later insertions, which per-chunk feeding would
+        // violate at every chunk tail (corrupting the tree). Symbol lengths are
+        // still capped at chunk boundaries by the encoder itself.
+        _encoder.Append(span);
+
         bool firstChunk = true;      // block start: dictionary reset must be signaled
         bool propsSent = false;      // properties byte sent in this block yet?
         bool needStateReset = false; // required after a stored-uncompressed chunk
@@ -66,10 +73,6 @@ internal sealed class Lzma2Encoder : IDisposable
         while (remaining > 0)
         {
             int thisChunk = Math.Min(remaining, _chunkSize);
-
-            // Feed the chunk's data to the match finder; the dictionary window
-            // already contains all previous chunks of this block.
-            _encoder.Append(span.Slice(pos, thisChunk));
 
             if (needStateReset)
                 _encoder.ResetState();

@@ -14,7 +14,7 @@ namespace LzmaNet.LZ;
 /// mask instead of an integer modulo in the chain-walk inner loop, and match
 /// lengths are computed 8 bytes at a time.
 /// </summary>
-internal sealed class HashChainMatchFinder : IDisposable
+internal sealed class HashChainMatchFinder : IMatchFinder
 {
     private const int kHash2Size = 1 << 10;
     private const int kHash3Size = 1 << 16;
