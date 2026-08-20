@@ -89,6 +89,20 @@ public sealed class XzCompressOptions
     public int? BlockSize { get; set; }
 
     /// <summary>
+    /// Optional pre-compression filter (BCJ or Delta) applied before LZMA2.
+    /// BCJ filters substantially improve the ratio on machine code (executables,
+    /// shared libraries); use the variant matching the target architecture.
+    /// Default is <see cref="XzFilterType.None"/>.
+    /// </summary>
+    public XzFilterType Filter { get; set; } = XzFilterType.None;
+
+    /// <summary>
+    /// Byte distance for the <see cref="XzFilterType.Delta"/> filter (1–256).
+    /// Ignored for other filters. Default is 1.
+    /// </summary>
+    public int DeltaDistance { get; set; } = 1;
+
+    /// <summary>
     /// Returns a default options instance equivalent to <c>xz -6</c>.
     /// </summary>
     public static XzCompressOptions Default => new();
@@ -107,7 +121,22 @@ public sealed class XzCompressOptions
             throw new ArgumentOutOfRangeException(nameof(DictionarySize), "Dictionary size must be at least 4 KB.");
         if (BlockSize.HasValue && BlockSize.Value < 4096)
             throw new ArgumentOutOfRangeException(nameof(BlockSize), "Block size must be at least 4 KB.");
+        if (!Enum.IsDefined(Filter))
+            throw new ArgumentOutOfRangeException(nameof(Filter));
+        if (Filter == XzFilterType.Delta && (DeltaDistance < 1 || DeltaDistance > 256))
+            throw new ArgumentOutOfRangeException(nameof(DeltaDistance), "Delta distance must be 1-256.");
     }
+
+    /// <summary>
+    /// Resolves the configured filter to its XZ filter ID and encoded properties,
+    /// or (0, null) when no filter is configured.
+    /// </summary>
+    internal (ulong Id, byte[]? Props) ResolvedFilter => Filter switch
+    {
+        XzFilterType.None => (0UL, null),
+        XzFilterType.Delta => (XzConstants.FilterIdDelta, new[] { (byte)(DeltaDistance - 1) }),
+        _ => (Filter.ToFilterId(), Array.Empty<byte>()),
+    };
 
     /// <summary>
     /// Gets the resolved thread count (replacing 0 with <see cref="Environment.ProcessorCount"/>).

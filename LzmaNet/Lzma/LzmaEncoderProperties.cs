@@ -26,6 +26,13 @@ internal sealed class LzmaEncoderProperties
     public int CutValue { get; set; } = 32;
 
     /// <summary>
+    /// Matches at least this long are emitted immediately; shorter candidates go
+    /// through lazy one-step lookahead. Higher values improve ratio at the cost
+    /// of encode speed. Default: 64.
+    /// </summary>
+    public int NiceLength { get; set; } = 64;
+
+    /// <summary>
     /// Gets the properties byte encoding lc, lp, pb.
     /// </summary>
     public byte PropertiesByte => LzmaConstants.EncodeProperties(Lc, Lp, Pb);
@@ -64,6 +71,16 @@ internal sealed class LzmaEncoderProperties
 
         props.MatchMaxLen = level <= 1 ? 128 : LzmaConstants.kMatchMaxLen;
 
+        // Lazy-matching threshold: fast levels stay greedy (NiceLength = 2
+        // disables lookahead since every match candidate is at least 2 long),
+        // mid levels look ahead moderately, high levels aggressively.
+        props.NiceLength = level switch
+        {
+            <= 2 => LzmaConstants.kMatchMinLen, // greedy
+            <= 5 => 32,
+            _ => 64,
+        };
+
         // Extreme mode: significantly increase search depth for better compression
         // at the cost of more CPU time, matching xz --extreme behavior.
         if (extreme)
@@ -77,8 +94,9 @@ internal sealed class LzmaEncoderProperties
                 8 or 9 => 512,
                 _ => 128
             };
-            // Also use maximum match length at all levels
+            // Also use maximum match length and maximum lazy lookahead at all levels
             props.MatchMaxLen = LzmaConstants.kMatchMaxLen;
+            props.NiceLength = LzmaConstants.kMatchMaxLen;
         }
 
         // Standard lc/lp/pb
@@ -102,5 +120,7 @@ internal sealed class LzmaEncoderProperties
             throw new ArgumentOutOfRangeException(nameof(Pb));
         if (DictionarySize < 1)
             throw new ArgumentOutOfRangeException(nameof(DictionarySize));
+        if (NiceLength < LzmaConstants.kMatchMinLen || NiceLength > LzmaConstants.kMatchMaxLen)
+            throw new ArgumentOutOfRangeException(nameof(NiceLength));
     }
 }

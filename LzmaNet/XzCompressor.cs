@@ -73,12 +73,28 @@ public static class XzCompressor
     /// <exception cref="LzmaDataErrorException">The compressed data is corrupt.</exception>
     public static byte[] Decompress(ReadOnlySpan<byte> compressedData, int threads)
     {
+        return Decompress(compressedData, new XzDecompressOptions { Threads = threads });
+    }
+
+    /// <summary>
+    /// Decompresses XZ formatted data using the specified options
+    /// (thread count and output size limit) and returns the uncompressed bytes.
+    /// </summary>
+    /// <param name="compressedData">The XZ compressed data.</param>
+    /// <param name="options">Decompression options. When <c>null</c>, uses defaults.</param>
+    /// <returns>A byte array containing the decompressed data.</returns>
+    /// <exception cref="LzmaFormatException">The data is not in valid XZ format.</exception>
+    /// <exception cref="LzmaDataErrorException">The compressed data is corrupt.</exception>
+    /// <exception cref="LzmaMemoryLimitException">Output would exceed
+    /// <see cref="XzDecompressOptions.MaxOutputSize"/>.</exception>
+    public static byte[] Decompress(ReadOnlySpan<byte> compressedData, XzDecompressOptions? options)
+    {
         byte[] inputArray = compressedData.ToArray();
         // publiclyVisible: true keeps TryGetBuffer working so block decoding can
         // slice compressed data directly from this buffer instead of copying it.
         using var input = new MemoryStream(inputArray, 0, inputArray.Length,
             writable: false, publiclyVisible: true);
-        using var xz = new XzDecompressStream(input, threads, leaveOpen: true);
+        using var xz = new XzDecompressStream(input, options, leaveOpen: true);
         using var output = new MemoryStream();
         xz.CopyTo(output);
         return output.ToArray();
