@@ -29,6 +29,13 @@ public sealed class XzDecompressOptions
     public long MaxOutputSize { get; set; } = long.MaxValue;
 
     /// <summary>
+    /// Optional progress sink. Reports the cumulative number of uncompressed
+    /// bytes decoded so far, once per decoded XZ block (or batch of blocks in
+    /// parallel mode). Reports are made from the reading thread.
+    /// </summary>
+    public IProgress<long>? Progress { get; set; }
+
+    /// <summary>
     /// Returns a default options instance (single-threaded, no output limit).
     /// </summary>
     public static XzDecompressOptions Default => new();

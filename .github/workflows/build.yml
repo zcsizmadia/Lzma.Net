@@ -75,6 +75,36 @@ jobs:
       - name: Test
         run: dotnet test -c Release --no-build
 
+  test-no-simd:
+    runs-on: ubuntu-latest
+    name: test (no hardware intrinsics)
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+            10.0.x
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build -c Release --no-restore
+
+      # Keeps the SIMD fallback paths (table CRC, scalar match compare)
+      # permanently verified: with hardware intrinsics disabled, the runtime
+      # reports Pclmulqdq/Vector256/Vector128 as unsupported and only the
+      # fallback code paths execute.
+      - name: Test with hardware intrinsics disabled
+        run: dotnet test -c Release --no-build
+        env:
+          DOTNET_EnableHWIntrinsic: '0'
+
   pack:
     needs: build
     runs-on: ubuntu-latest

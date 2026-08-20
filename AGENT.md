@@ -74,6 +74,9 @@ This is a core design principle. Always prefer:
 - `XzDecompressOptions.MaxOutputSize` must be enforced BEFORE output allocation (decompression-bomb protection); the checks live in `XzBlock` where claimed sizes are first known
 - MT compression is a bounded pipeline (`_inFlight` in `XzCompressStream`): blocks must be completed/written strictly in order (oldest first) — XZ requires sequential block order and the index records must match
 - The CRC `Fold` helper dispatches PCLMULQDQ (x86/x64) vs PMULL (ARM64) at JIT time; `CrcFolding.IsSupported` is the single gate — keep both paths mathematically identical
+- **BT4 invariant (critical)**: `Lzma2Encoder` appends the WHOLE block to the match finder before encoding any chunk. The binary-tree finder's early subtree adoption assumes its length limit never grows for later insertions; per-chunk feeding shrinks/regrows the limit at every chunk tail and CORRUPTS the tree (false matches). Symbol lengths are capped at chunk boundaries at use time instead
+- The optimal parser (`EncodeChunkOptimal`) is a forward DP: node[cur] must be final before `RelaxFrom(cur)` runs (all edges go forward). Node rep/state tracking mirrors the emission methods' updates exactly — if `EncodeRepMatch`/`EncodeMatch` rotation logic changes, `RotateReps`/state transitions in the parser must change with it
+- Prices (`RangeCoder/Price.cs`) are 1/16-bit estimates from the reference LZMA table; they affect only ratio, never correctness
 
 ### Testing
 - **TUnit** — the test project requires `<OutputType>Exe</OutputType>` and `<IsTestProject>true</IsTestProject>`

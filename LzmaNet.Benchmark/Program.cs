@@ -73,6 +73,55 @@ foreach (var (name, data, runs, xzBlockMatchedRow) in scenarios)
     RunScenario(name, data, runs, xzBlockMatchedRow);
 }
 
+// ── High-preset comparison (BT4 + optimal parser) ───────────────────
+if (silesia != null)
+{
+    Console.WriteLine("═══════════════════════════════════════════════════════════════════");
+    Console.WriteLine("  Silesia corpus — preset 9 (BT4 match finder + optimal parser)");
+    Console.WriteLine("═══════════════════════════════════════════════════════════════════");
+    Console.WriteLine();
+    Console.WriteLine("  | Implementation | Config | MB/s | Ratio | Size | Alloc |");
+    Console.WriteLine("  |---|---|---:|---:|---:|---:|");
+
+    double mb9 = silesia.Length / (1024.0 * 1024.0);
+    {
+        var opts9 = new XzCompressOptions { Preset = 9 };
+        long size = 0;
+        var (s, alloc) = MedianSecondsWithAlloc(1, () => { size = XzCompressor.Compress(silesia, opts9).Length; });
+        PrintComp("LzmaNet", "preset 9, 1T", mb9 / s, size, silesia.Length, alloc);
+
+        var optsMt = new XzCompressOptions { Preset = 9, Threads = mt };
+        var (sMt, allocMt) = MedianSecondsWithAlloc(1, () => { size = XzCompressor.Compress(silesia, optsMt).Length; });
+        PrintComp("LzmaNet", $"preset 9, {mt}T", mb9 / sMt, size, silesia.Length, allocMt);
+    }
+
+    if (xzPath != null)
+    {
+        string inputFile = Path.Combine(cacheDir, "bench-input9.bin");
+        File.WriteAllBytes(inputFile, silesia);
+        string outFile = inputFile + ".xz";
+        foreach (int threads in new[] { 1, mt })
+        {
+            long size = 0;
+            double s = MedianSeconds(1, () =>
+            {
+                File.Delete(outFile);
+                RunProcess(xzPath, $"-9 -T {threads} -k -q \"{inputFile}\"");
+                size = new FileInfo(outFile).Length;
+            });
+            PrintComp("xz CLI", $"-9, {threads}T", mb9 / s, size, silesia.Length);
+        }
+        File.Delete(outFile);
+        File.Delete(inputFile);
+    }
+    Console.WriteLine();
+}
+
+using (var self = System.Diagnostics.Process.GetCurrentProcess())
+{
+    Console.WriteLine($"Peak working set (whole benchmark process): {self.PeakWorkingSet64 / (1024.0 * 1024.0):F0} MB");
+}
+
 return;
 
 // ── Scenario driver ─────────────────────────────────────────────────
@@ -87,15 +136,15 @@ void RunScenario(string name, byte[] data, int runs, bool xzBlockMatchedRow)
     // ---- Compression (each implementation with its own defaults) ----
     Console.WriteLine();
     Console.WriteLine("  COMPRESSION");
-    Console.WriteLine("  | Implementation | Config | MB/s | Ratio | Size |");
-    Console.WriteLine("  |---|---|---:|---:|---:|");
+    Console.WriteLine("  | Implementation | Config | MB/s | Ratio | Size | Alloc |");
+    Console.WriteLine("  |---|---|---:|---:|---:|---:|");
 
     foreach (int threads in new[] { 1, mt })
     {
         var opts = new XzCompressOptions { Preset = Preset, Threads = threads };
         long size = 0;
-        double s = MedianSeconds(runs, () => { size = XzCompressor.Compress(data, opts).Length; });
-        PrintComp("LzmaNet", $"{threads}T defaults", mb / s, size, data.Length);
+        var (s, alloc) = MedianSecondsWithAlloc(runs, () => { size = XzCompressor.Compress(data, opts).Length; });
+        PrintComp("LzmaNet", $"{threads}T defaults", mb / s, size, data.Length, alloc);
     }
 
     if (xzBlockMatchedRow)
@@ -104,8 +153,8 @@ void RunScenario(string name, byte[] data, int runs, bool xzBlockMatchedRow)
         // so show the matched small-block MT row for each of them.
         var opts = new XzCompressOptions { Preset = Preset, Threads = mt, BlockSize = 1 << 20 };
         long size = 0;
-        double s = MedianSeconds(runs, () => { size = XzCompressor.Compress(data, opts).Length; });
-        PrintComp("LzmaNet", $"{mt}T BlockSize=1MiB", mb / s, size, data.Length);
+        var (s, alloc) = MedianSecondsWithAlloc(runs, () => { size = XzCompressor.Compress(data, opts).Length; });
+        PrintComp("LzmaNet", $"{mt}T BlockSize=1MiB", mb / s, size, data.Length, alloc);
     }
 
     string? inputFile = null;
@@ -221,9 +270,11 @@ static void RunCrcMicroBenchmark()
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-static void PrintComp(string impl, string config, double mbps, long size, long originalLength)
+static void PrintComp(string impl, string config, double mbps, long size, long originalLength,
+    long allocBytes = -1)
 {
-    Console.WriteLine($"  | {impl} | {config} | {mbps,8:F1} | {(double)size / originalLength * 100,5:F1}% | {size:N0} |");
+    string alloc = allocBytes >= 0 ? $"{allocBytes / (1024.0 * 1024.0),7:F0} MB" : "n/a";
+    Console.WriteLine($"  | {impl} | {config} | {mbps,8:F1} | {(double)size / originalLength * 100,5:F1}% | {size:N0} | {alloc} |");
 }
 
 static double MedianSeconds(int runs, Action action)
@@ -238,6 +289,23 @@ static double MedianSeconds(int runs, Action action)
     }
     Array.Sort(times);
     return times[runs / 2];
+}
+
+static (double Seconds, long AllocBytes) MedianSecondsWithAlloc(int runs, Action action)
+{
+    var times = new double[runs];
+    var allocs = new long[runs];
+    for (int i = 0; i < runs; i++)
+    {
+        long before = GC.GetTotalAllocatedBytes(precise: true);
+        var sw = Stopwatch.StartNew();
+        action();
+        sw.Stop();
+        times[i] = sw.Elapsed.TotalSeconds;
+        allocs[i] = GC.GetTotalAllocatedBytes(precise: true) - before;
+    }
+    Array.Sort(times, allocs);
+    return (times[runs / 2], allocs[runs / 2]);
 }
 
 static void Verify(byte[] decoded, byte[] original, string what)

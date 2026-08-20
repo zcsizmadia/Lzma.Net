@@ -21,8 +21,10 @@ A **native C# implementation** of the XZ/LZMA2/LZMA compression format. No nativ
 - **Random access** — `XzSeekableStream` seeks anywhere in the uncompressed data and decodes only the blocks it needs, using the XZ index
 - **BCJ/Delta filters** — encode *and* decode support for x86, ARM, ARM64, ARM-Thumb, PowerPC, SPARC, IA-64, RISC-V, and Delta filters; BCJ dramatically improves ratio on executables (`XzCompressOptions.Filter`)
 - **Decompression-bomb protection** — `XzDecompressOptions.MaxOutputSize` rejects oversized output claims before any allocation happens
-- **Presets 0–9** — matching `xz` CLI compression levels and dictionary sizes
+- **Presets 0–9** — matching `xz` CLI compression levels and dictionary sizes; presets 7–9 use a BT4 match finder with price-based **optimal parsing** for near-xz ratios
 - **Extreme mode** — equivalent to `xz -e`, spends more CPU time for better compression
+- **Legacy `.lzma` format** — `LzmaAloneCompressStream` / `LzmaAloneDecompressStream` for the LZMA-alone format (7-Zip / `xz --format=lzma` compatible, including unknown-size streams)
+- **Progress reporting** — `IProgress<long>` hooks on both compression and decompression options
 - **Integrity checks** — CRC32, CRC64, SHA-256, or no check
 - **Concatenated streams** — reads multiple XZ streams appended back-to-back
 - **Zero-copy design** — uses `Span<T>`, `ReadOnlySpan<T>`, `ArrayPool<T>`, and `stackalloc` throughout
@@ -33,18 +35,18 @@ A **native C# implementation** of the XZ/LZMA2/LZMA compression format. No nativ
 
 See [BENCHMARK.md](BENCHMARK.md) for the full methodology and results across real-world, synthetic, and incompressible data.
 
-Quick summary — [Silesia corpus](https://sun.aei.polsl.pl/~sdeor/index.php?page=silesia) (211.9 MB real-world mix), preset 6, medians of repeated runs, percentages relative to the native `xz` CLI at the same thread count. Decompression is measured on identical xz-produced input files, byte-verified:
+Quick summary — [Silesia corpus](https://sun.aei.polsl.pl/~sdeor/index.php?page=silesia) (211.9 MB real-world mix), medians of repeated runs, percentages relative to the native `xz` CLI at the same preset and thread count. Decompression is measured on identical xz-produced input files, byte-verified:
 
 | | Compress | % of xz | Decompress | % of xz | Ratio |
 |---|---:|---:|---:|---:|---:|
-| **LzmaNet** (pure C#, 1 thread) | 5.3 MB/s | 183% | 83.0 MB/s | 119% | 27.0% |
-| **LzmaNet** (pure C#, 20 threads) | 18.4 MB/s | 148% | 507.3 MB/s | 386% | 27.0% |
-| xz CLI (native, 1 thread) — *baseline* | 2.9 MB/s | 100% | 69.6 MB/s | 100% | 23.2% |
-| xz CLI (native, 20 threads) — *baseline* | 12.4 MB/s | 100% | 131.5 MB/s | 100% | 23.4% |
+| **LzmaNet** (preset 6, 1 thread) | 4.7 MB/s | 174% | 80.1 MB/s | 102% | 27.0% |
+| **LzmaNet** (preset 6, 20 threads) | 17.0 MB/s | 140% | 369.0 MB/s | 222% | 27.0% |
+| **LzmaNet** (preset 9, optimal parser) | 1.6 MB/s | 67% | — | — | **23.0%** |
+| xz CLI (preset 6, 1 thread) — *baseline* | 2.7 MB/s | 100% | 78.8 MB/s | 100% | 23.2% |
+| xz CLI (preset 6, 20 threads) — *baseline* | 12.1 MB/s | 100% | 165.9 MB/s | 100% | 23.4% |
+| xz CLI (-9, 1 thread) — *baseline* | 2.4 MB/s | 100% | — | — | 23.0% |
 
-LzmaNet compresses ~1.8× faster than native xz and decodes ~19% faster single-threaded (3.9× with parallel block decode of multi-block streams). xz achieves a ~3.8-point better ratio — its BT4 near-optimal parser trades speed for ratio, LzmaNet's lazy hash-chain finder trades the other way.
-
-LzmaNet compresses ~3.7× faster than native liblzma and decompresses at native `xz` speed single-threaded. Multi-block streams can additionally be compressed *and* decompressed with parallel block processing (`XzCompressOptions.Threads`, `XzCompressor.Decompress(data, threads)`).
+At the default preset, LzmaNet compresses ~1.7× faster than native xz and decodes at native speed single-threaded (2.2× with parallel block decode of multi-block streams). At preset 9 — BT4 match finder with price-based optimal parsing, the same architecture as xz's high presets — LzmaNet **matches `xz -9`'s compression ratio** (within 0.2% of its output size) at ~two-thirds of its speed.
 
 ## Installation
 
@@ -185,7 +187,7 @@ All tuning knobs are exposed through the `XzCompressOptions` class:
 
 | Property | Type | Default | Description |
 |---|---|---|---|
-| `Preset` | `int` | `6` | Compression level 0–9. Higher = smaller output, more CPU/memory. |
+| `Preset` | `int` | `6` | Compression level 0–9. Higher = smaller output, more CPU/memory. Presets 0–2 are greedy, 3–6 use lazy matching, 7–9 use BT4 + optimal parsing. |
 | `Extreme` | `bool` | `false` | When `true`, spends significantly more CPU to improve ratio. Equivalent to `xz -e`. |
 | `Threads` | `int` | `1` | `0` = all CPUs, `1` = single-threaded, `N` = N threads. |
 | `CheckType` | `XzCheckType` | `Crc64` | Integrity check: `None`, `Crc32`, `Crc64`, or `Sha256`. |
@@ -218,11 +220,13 @@ Output is fully compatible with the standard `xz` tool and any other XZ-complian
 LzmaNet is structured as a set of layered codecs, all implemented in pure C#:
 
 ```
-XzCompressor / XzCompressStream / XzDecompressStream   (public API)
+XzCompressor / XzCompressStream / XzDecompressStream / XzSeekableStream   (public API)
+LzmaAloneCompressStream / LzmaAloneDecompressStream   (legacy .lzma format)
   └─ XZ container format   (header, block, index, footer)
        └─ LZMA2 codec      (chunked wrapper over LZMA)
             └─ LZMA codec  (LZ77 + adaptive range coding)
-                 ├─ HC4 match finder (hash-chain, 4-byte hashing)
+                 ├─ Match finders: HC4 (hash-chain) and BT4 (binary tree)
+                 ├─ Parsers: greedy / lazy / price-based optimal
                  ├─ Range encoder / decoder
                  └─ CRC32 / CRC64 integrity checks
 ```

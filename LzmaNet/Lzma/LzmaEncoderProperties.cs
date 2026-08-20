@@ -27,10 +27,24 @@ internal sealed class LzmaEncoderProperties
 
     /// <summary>
     /// Matches at least this long are emitted immediately; shorter candidates go
-    /// through lazy one-step lookahead. Higher values improve ratio at the cost
-    /// of encode speed. Default: 64.
+    /// through lazy lookahead or optimal parsing. Higher values improve ratio at
+    /// the cost of encode speed. Default: 64.
     /// </summary>
     public int NiceLength { get; set; } = 64;
+
+    /// <summary>
+    /// Use the binary-tree (BT4) match finder instead of the hash chain.
+    /// Finds the nearest distance for every match length (better ratio),
+    /// at higher CPU and memory cost. Default: false.
+    /// </summary>
+    public bool UseBinaryTree { get; set; }
+
+    /// <summary>
+    /// Use price-based optimal parsing instead of lazy matching: symbol choices
+    /// are made by dynamic programming over estimated range-coder bit costs.
+    /// Best combined with <see cref="UseBinaryTree"/>. Default: false.
+    /// </summary>
+    public bool OptimalParse { get; set; }
 
     /// <summary>
     /// Gets the properties byte encoding lc, lp, pb.
@@ -81,6 +95,14 @@ internal sealed class LzmaEncoderProperties
             _ => 64,
         };
 
+        // High presets use the binary-tree match finder with optimal parsing,
+        // matching how xz positions its presets (ratio over speed).
+        if (level >= 7)
+        {
+            props.UseBinaryTree = true;
+            props.OptimalParse = true;
+        }
+
         // Extreme mode: significantly increase search depth for better compression
         // at the cost of more CPU time, matching xz --extreme behavior.
         if (extreme)
@@ -94,9 +116,12 @@ internal sealed class LzmaEncoderProperties
                 8 or 9 => 512,
                 _ => 128
             };
-            // Also use maximum match length and maximum lazy lookahead at all levels
+            // Also use maximum match length and lookahead, the binary-tree
+            // match finder, and optimal parsing at all levels
             props.MatchMaxLen = LzmaConstants.kMatchMaxLen;
             props.NiceLength = LzmaConstants.kMatchMaxLen;
+            props.UseBinaryTree = true;
+            props.OptimalParse = true;
         }
 
         // Standard lc/lp/pb
