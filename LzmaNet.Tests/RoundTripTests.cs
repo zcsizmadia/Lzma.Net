@@ -92,7 +92,7 @@ public class RoundTripTests
         for (int i = 0; i < original.Length; i++)
             original[i] = (byte)(i * 7 + i / 13);
 
-        byte[] compressed = XzCompressor.Compress(original, new XzCompressOptions { Preset = preset });
+        byte[] compressed = XzCompressor.Compress(original, new XzCompressOptions { Preset = preset, DictionarySize = preset >= 7 ? 1 << 22 : null });
         byte[] decompressed = XzCompressor.Decompress(compressed);
         await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
     }
@@ -272,7 +272,7 @@ public class RoundTripTests
         for (int i = 0; i < original.Length; i++)
             original[i] = (byte)(i * 7 + i / 13);
 
-        var options = new XzCompressOptions { Preset = preset, Extreme = true };
+        var options = new XzCompressOptions { Preset = preset, Extreme = true, DictionarySize = preset >= 7 ? 1 << 22 : null };
         byte[] compressed = XzCompressor.Compress(original, options);
         byte[] decompressed = XzCompressor.Decompress(compressed);
         await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
@@ -367,7 +367,7 @@ public class RoundTripTests
         for (int i = 0; i < original.Length; i++)
             original[i] = (byte)(i * 7 + i / 13);
 
-        var options = new XzCompressOptions { Preset = preset, Extreme = extreme };
+        var options = new XzCompressOptions { Preset = preset, Extreme = extreme, DictionarySize = preset >= 7 ? 1 << 22 : null };
         byte[] compressed = XzCompressor.Compress(original, options);
         byte[] decompressed = XzCompressor.Decompress(compressed);
         await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
@@ -387,7 +387,7 @@ public class RoundTripTests
         for (int i = 0; i < original.Length; i++)
             original[i] = (byte)(i % 256 < 200 ? i % 37 : rng.Next(256));
 
-        var options = new XzCompressOptions { Preset = preset, Extreme = extreme };
+        var options = new XzCompressOptions { Preset = preset, Extreme = extreme, DictionarySize = preset >= 7 ? 1 << 22 : null };
         byte[] compressed = XzCompressor.Compress(original, options);
         byte[] decompressed = XzCompressor.Decompress(compressed);
         await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
@@ -405,7 +405,7 @@ public class RoundTripTests
             original[i] = (byte)(i % 251);
 
         using var output = new MemoryStream();
-        var options = new XzCompressOptions { Preset = preset };
+        var options = new XzCompressOptions { Preset = preset, DictionarySize = preset >= 7 ? 1 << 22 : null };
         using (var xz = new XzCompressStream(output, options, leaveOpen: true))
         {
             xz.Write(original);
