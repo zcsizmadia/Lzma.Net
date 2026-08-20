@@ -291,6 +291,19 @@ internal sealed class HashChainMatchFinder : IDisposable
                 len += 32;
             }
         }
+        else if (Vector128.IsHardwareAccelerated)
+        {
+            // ARM64 NEON / SSE2-only x86: 16 bytes per step.
+            while (len + 16 <= limit)
+            {
+                var va = Vector128.LoadUnsafe(ref bufRef, (nuint)(a + len));
+                var vb = Vector128.LoadUnsafe(ref bufRef, (nuint)(b + len));
+                uint neq = ~Vector128.Equals(va, vb).ExtractMostSignificantBits() & 0xFFFF;
+                if (neq != 0)
+                    return len + BitOperations.TrailingZeroCount(neq);
+                len += 16;
+            }
+        }
 
         if (BitConverter.IsLittleEndian)
         {
