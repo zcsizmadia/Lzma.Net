@@ -45,6 +45,25 @@ public class LzmaDataErrorException : LzmaException
 }
 
 /// <summary>
+/// The exception that is thrown when decompression would exceed the configured
+/// output size limit (see <see cref="XzDecompressOptions.MaxOutputSize"/>).
+/// This typically indicates a decompression bomb or a corrupt size field.
+/// </summary>
+public class LzmaMemoryLimitException : LzmaException
+{
+    /// <summary>
+    /// Initializes a new instance of the <see cref="LzmaMemoryLimitException"/> class.
+    /// </summary>
+    public LzmaMemoryLimitException() : base("Decompressed output would exceed the configured memory limit.") { }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="LzmaMemoryLimitException"/> class with a specified error message.
+    /// </summary>
+    /// <param name="message">The message that describes the error.</param>
+    public LzmaMemoryLimitException(string message) : base(message) { }
+}
+
+/// <summary>
 /// The exception that is thrown when the input data format is not recognized.
 /// </summary>
 public class LzmaFormatException : LzmaException

@@ -267,7 +267,7 @@ public class StreamAndFormatRegressionTests
         output.WriteByte((byte)value);
     }
 
-    private sealed class NonSeekableStream(
+    internal sealed class NonSeekableStream(
         Stream inner, bool canRead, bool canWrite) : Stream
     {
         public override bool CanRead => canRead;
