@@ -16,10 +16,6 @@ namespace LzmaNet.LZ;
 /// </summary>
 internal sealed class HashChainMatchFinder : IMatchFinder
 {
-    private const int kHash2Size = 1 << 10;
-    private const int kHash3Size = 1 << 16;
-    private const int kFixHashSize = kHash2Size + kHash3Size;
-
     private readonly int _windowSize;
     private readonly int _cyclicBufferSize;
     private readonly int _cyclicMask;
@@ -36,21 +32,6 @@ internal sealed class HashChainMatchFinder : IMatchFinder
     private bool _disposed;
     private bool _hashUpdatedAtPos; // prevents double hash update when FindMatches + MovePos at same pos
 
-    private static readonly uint[] CrcTable = CreateCrcTable();
-
-    private static uint[] CreateCrcTable()
-    {
-        var table = new uint[256];
-        for (uint i = 0; i < 256; i++)
-        {
-            uint crc = i;
-            for (int j = 0; j < 8; j++)
-                crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xEDB88320u : crc >> 1;
-            table[i] = crc;
-        }
-        return table;
-    }
-
     public HashChainMatchFinder(int dictSize, int matchMaxLen, int cutValue)
     {
         // The true match window (max look-back distance). Distances must stay
@@ -65,10 +46,10 @@ internal sealed class HashChainMatchFinder : IMatchFinder
         _matchMaxLen = matchMaxLen;
         _cutValue = cutValue;
 
-        int hashBits = dictSize < (1 << 16) ? 16 : dictSize < (1 << 20) ? 18 : 20;
+        int hashBits = LzHash.HashBits(dictSize);
         _hashMask = (1 << hashBits) - 1;
 
-        int hashSize = kFixHashSize + (1 << hashBits);
+        int hashSize = LzHash.TableSize(_hashMask);
         _hash = ArrayPool<int>.Shared.Rent(hashSize);
         Array.Fill(_hash, -1, 0, hashSize);
 
@@ -138,7 +119,7 @@ internal sealed class HashChainMatchFinder : IMatchFinder
     /// </summary>
     private void RebaseTables(int delta)
     {
-        int hashSize = kFixHashSize + _hashMask + 1;
+        int hashSize = LzHash.TableSize(_hashMask);
         for (int i = 0; i < hashSize; i++)
         {
             int v = _hash[i];
@@ -160,7 +141,7 @@ internal sealed class HashChainMatchFinder : IMatchFinder
         _pos = 0;
         _streamPos = 0;
         _hashUpdatedAtPos = false;
-        int hashSize = kFixHashSize + _hashMask + 1;
+        int hashSize = LzHash.TableSize(_hashMask);
         Array.Fill(_hash, -1, 0, hashSize);
         Array.Fill(_chain, -1, 0, _cyclicBufferSize);
     }
@@ -187,13 +168,7 @@ internal sealed class HashChainMatchFinder : IMatchFinder
         if (avail >= 4)
         {
             byte[] buffer = _buffer;
-            uint hash2Val = CrcTable[buffer[cur]] ^ buffer[cur + 1];
-            uint hash3Val = hash2Val ^ ((uint)CrcTable[buffer[cur + 2]] << 5);
-            uint hash4Val = hash3Val ^ ((uint)CrcTable[buffer[cur + 3]] << 13);
-
-            uint h2 = hash2Val & (kHash2Size - 1);
-            uint h3 = kHash2Size + (hash3Val & (kHash3Size - 1));
-            uint h4 = kFixHashSize + (hash4Val & (uint)_hashMask);
+            LzHash.Compute(buffer, cur, _hashMask, out uint h2, out uint h3, out uint h4);
 
             // Save old heads before updating
             int pos2 = _hash[h2];
@@ -249,7 +224,7 @@ internal sealed class HashChainMatchFinder : IMatchFinder
                 if (buffer[curMatch + bestLen] == buffer[cur + bestLen])
                 {
                     int limit = Math.Min(maxLen, _streamPos - curMatch);
-                    int len = MatchLength(buffer, curMatch, cur, limit);
+                    int len = MatchLength.Common(buffer, curMatch, cur, limit);
 
                     if (len > bestLen)
                     {
@@ -276,60 +251,6 @@ internal sealed class HashChainMatchFinder : IMatchFinder
     }
 
     /// <summary>
-    /// Computes the common-prefix length of buffer[a..] and buffer[b..], up to limit,
-    /// comparing 32 bytes at a time with SIMD where available, then 8 bytes at a time.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int MatchLength(byte[] buffer, int a, int b, int limit)
-    {
-        int len = 0;
-        ref byte bufRef = ref System.Runtime.InteropServices.MemoryMarshal
-            .GetArrayDataReference(buffer);
-
-        if (Vector256.IsHardwareAccelerated)
-        {
-            while (len + 32 <= limit)
-            {
-                var va = Vector256.LoadUnsafe(ref bufRef, (nuint)(a + len));
-                var vb = Vector256.LoadUnsafe(ref bufRef, (nuint)(b + len));
-                uint neq = ~Vector256.Equals(va, vb).ExtractMostSignificantBits();
-                if (neq != 0)
-                    return len + BitOperations.TrailingZeroCount(neq);
-                len += 32;
-            }
-        }
-        else if (Vector128.IsHardwareAccelerated)
-        {
-            // ARM64 NEON / SSE2-only x86: 16 bytes per step.
-            while (len + 16 <= limit)
-            {
-                var va = Vector128.LoadUnsafe(ref bufRef, (nuint)(a + len));
-                var vb = Vector128.LoadUnsafe(ref bufRef, (nuint)(b + len));
-                uint neq = ~Vector128.Equals(va, vb).ExtractMostSignificantBits() & 0xFFFF;
-                if (neq != 0)
-                    return len + BitOperations.TrailingZeroCount(neq);
-                len += 16;
-            }
-        }
-
-        if (BitConverter.IsLittleEndian)
-        {
-            while (len + 8 <= limit)
-            {
-                ulong x = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref bufRef, a + len))
-                        ^ Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref bufRef, b + len));
-                if (x != 0)
-                    return len + (BitOperations.TrailingZeroCount(x) >> 3);
-                len += 8;
-            }
-        }
-
-        while (len < limit && buffer[a + len] == buffer[b + len])
-            len++;
-        return len;
-    }
-
-    /// <summary>
     /// Advances position by one byte, updating hash tables and chain if not already done by FindMatches.
     /// </summary>
     public void MovePos()
@@ -353,13 +274,7 @@ internal sealed class HashChainMatchFinder : IMatchFinder
     private void UpdateHashAtCurrentPos()
     {
         int cur = _pos;
-        uint hash2Val = CrcTable[_buffer[cur]] ^ _buffer[cur + 1];
-        uint hash3Val = hash2Val ^ ((uint)CrcTable[_buffer[cur + 2]] << 5);
-        uint hash4Val = hash3Val ^ ((uint)CrcTable[_buffer[cur + 3]] << 13);
-
-        uint h2 = hash2Val & (kHash2Size - 1);
-        uint h3 = kHash2Size + (hash3Val & (kHash3Size - 1));
-        uint h4 = kFixHashSize + (hash4Val & (uint)_hashMask);
+        LzHash.Compute(_buffer, cur, _hashMask, out uint h2, out uint h3, out uint h4);
 
         int oldHead = _hash[h4];
         _hash[h2] = _pos;

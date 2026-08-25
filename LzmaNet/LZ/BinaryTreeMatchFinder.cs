@@ -17,10 +17,6 @@ namespace LzmaNet.LZ;
 /// </summary>
 internal sealed class BinaryTreeMatchFinder : IMatchFinder
 {
-    private const int kHash2Size = 1 << 10;
-    private const int kHash3Size = 1 << 16;
-    private const int kFixHashSize = kHash2Size + kHash3Size;
-
     private readonly int _windowSize;
     private readonly int _cyclicBufferSize;
     private readonly int _cyclicMask;
@@ -37,21 +33,6 @@ internal sealed class BinaryTreeMatchFinder : IMatchFinder
     private int _streamPos;
     private bool _disposed;
     private bool _hashUpdatedAtPos;
-
-    private static readonly uint[] CrcTable = CreateCrcTable();
-
-    private static uint[] CreateCrcTable()
-    {
-        var table = new uint[256];
-        for (uint i = 0; i < 256; i++)
-        {
-            uint crc = i;
-            for (int j = 0; j < 8; j++)
-                crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xEDB88320u : crc >> 1;
-            table[i] = crc;
-        }
-        return table;
-    }
 
     public BinaryTreeMatchFinder(int dictSize, int matchMaxLen, int cutValue)
     {
@@ -72,10 +53,10 @@ internal sealed class BinaryTreeMatchFinder : IMatchFinder
         // which binds first when the window is not a power of two.
         _maxMatchDelta = Math.Min(_windowSize, _cyclicBufferSize - 1);
 
-        int hashBits = dictSize < (1 << 16) ? 16 : dictSize < (1 << 20) ? 18 : 20;
+        int hashBits = LzHash.HashBits(dictSize);
         _hashMask = (1 << hashBits) - 1;
 
-        int hashSize = kFixHashSize + (1 << hashBits);
+        int hashSize = LzHash.TableSize(_hashMask);
         _hash = ArrayPool<int>.Shared.Rent(hashSize);
         Array.Fill(_hash, -1, 0, hashSize);
 
@@ -129,7 +110,7 @@ internal sealed class BinaryTreeMatchFinder : IMatchFinder
 
     private void RebaseTables(int delta)
     {
-        int hashSize = kFixHashSize + _hashMask + 1;
+        int hashSize = LzHash.TableSize(_hashMask);
         for (int i = 0; i < hashSize; i++)
         {
             int v = _hash[i];
@@ -148,7 +129,7 @@ internal sealed class BinaryTreeMatchFinder : IMatchFinder
         _pos = 0;
         _streamPos = 0;
         _hashUpdatedAtPos = false;
-        int hashSize = kFixHashSize + _hashMask + 1;
+        int hashSize = LzHash.TableSize(_hashMask);
         Array.Fill(_hash, -1, 0, hashSize);
         Array.Fill(_son, -1, 0, 2 * _cyclicBufferSize);
     }
@@ -167,13 +148,7 @@ internal sealed class BinaryTreeMatchFinder : IMatchFinder
         int lenLimit = Math.Min(_matchMaxLen, avail);
         int matchCount = 0;
 
-        uint hash2Val = CrcTable[buffer[cur]] ^ buffer[cur + 1];
-        uint hash3Val = hash2Val ^ ((uint)CrcTable[buffer[cur + 2]] << 5);
-        uint hash4Val = hash3Val ^ ((uint)CrcTable[buffer[cur + 3]] << 13);
-
-        uint h2 = hash2Val & (kHash2Size - 1);
-        uint h3 = kHash2Size + (hash3Val & (kHash3Size - 1));
-        uint h4 = kFixHashSize + (hash4Val & (uint)_hashMask);
+        LzHash.Compute(buffer, cur, _hashMask, out uint h2, out uint h3, out uint h4);
 
         int pos2 = _hash[h2];
         int pos3 = _hash[h3];
@@ -190,7 +165,7 @@ internal sealed class BinaryTreeMatchFinder : IMatchFinder
         if (pos2 >= 0 && pos2 >= _pos - _windowSize
             && buffer[pos2] == buffer[cur] && buffer[pos2 + 1] == buffer[cur + 1])
         {
-            int len = MatchLength(buffer, pos2, cur, lenLimit);
+            int len = MatchLength.Common(buffer, pos2, cur, lenLimit);
             if (len > maxLen && matchCount < maxMatches)
             {
                 distances[matchCount] = _pos - pos2 - 1;
@@ -205,7 +180,7 @@ internal sealed class BinaryTreeMatchFinder : IMatchFinder
             && buffer[pos3] == buffer[cur] && buffer[pos3 + 1] == buffer[cur + 1]
             && buffer[pos3 + 2] == buffer[cur + 2])
         {
-            int len = MatchLength(buffer, pos3, cur, lenLimit);
+            int len = MatchLength.Common(buffer, pos3, cur, lenLimit);
             if (len > maxLen && matchCount < maxMatches)
             {
                 distances[matchCount] = _pos - pos3 - 1;
@@ -256,7 +231,7 @@ internal sealed class BinaryTreeMatchFinder : IMatchFinder
 
             if (buffer[curMatch + len] == buffer[cur + len])
             {
-                len = ExtendMatch(buffer, curMatch, cur, len + 1, lenLimit);
+                len = MatchLength.Extend(buffer, curMatch, cur, len + 1, lenLimit);
                 if (len > maxLen)
                 {
                     maxLen = len;
@@ -326,7 +301,7 @@ internal sealed class BinaryTreeMatchFinder : IMatchFinder
 
             if (buffer[curMatch + len] == buffer[cur + len])
             {
-                len = ExtendMatch(buffer, curMatch, cur, len + 1, lenLimit);
+                len = MatchLength.Extend(buffer, curMatch, cur, len + 1, lenLimit);
                 if (len == lenLimit)
                 {
                     son[ptr1] = son[pair];
@@ -352,65 +327,6 @@ internal sealed class BinaryTreeMatchFinder : IMatchFinder
         }
     }
 
-    /// <summary>Extends a match that is already known to be at least <paramref name="len"/> long.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int ExtendMatch(byte[] buffer, int a, int b, int len, int limit)
-    {
-        return len - 1 + MatchLengthFrom(buffer, a + len - 1, b + len - 1, limit - (len - 1));
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int MatchLength(byte[] buffer, int a, int b, int limit)
-        => MatchLengthFrom(buffer, a, b, limit);
-
-    private static int MatchLengthFrom(byte[] buffer, int a, int b, int limit)
-    {
-        int len = 0;
-        ref byte bufRef = ref System.Runtime.InteropServices.MemoryMarshal
-            .GetArrayDataReference(buffer);
-
-        if (Vector256.IsHardwareAccelerated)
-        {
-            while (len + 32 <= limit)
-            {
-                var va = Vector256.LoadUnsafe(ref bufRef, (nuint)(a + len));
-                var vb = Vector256.LoadUnsafe(ref bufRef, (nuint)(b + len));
-                uint neq = ~Vector256.Equals(va, vb).ExtractMostSignificantBits();
-                if (neq != 0)
-                    return len + BitOperations.TrailingZeroCount(neq);
-                len += 32;
-            }
-        }
-        else if (Vector128.IsHardwareAccelerated)
-        {
-            while (len + 16 <= limit)
-            {
-                var va = Vector128.LoadUnsafe(ref bufRef, (nuint)(a + len));
-                var vb = Vector128.LoadUnsafe(ref bufRef, (nuint)(b + len));
-                uint neq = ~Vector128.Equals(va, vb).ExtractMostSignificantBits() & 0xFFFF;
-                if (neq != 0)
-                    return len + BitOperations.TrailingZeroCount(neq);
-                len += 16;
-            }
-        }
-
-        if (BitConverter.IsLittleEndian)
-        {
-            while (len + 8 <= limit)
-            {
-                ulong x = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref bufRef, a + len))
-                        ^ Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref bufRef, b + len));
-                if (x != 0)
-                    return len + (BitOperations.TrailingZeroCount(x) >> 3);
-                len += 8;
-            }
-        }
-
-        while (len < limit && buffer[a + len] == buffer[b + len])
-            len++;
-        return len;
-    }
-
     public void MovePos()
     {
         if (!_hashUpdatedAtPos && Available >= 4)
@@ -431,13 +347,7 @@ internal sealed class BinaryTreeMatchFinder : IMatchFinder
         int cur = _pos;
         int lenLimit = Math.Min(_matchMaxLen, Available);
 
-        uint hash2Val = CrcTable[buffer[cur]] ^ buffer[cur + 1];
-        uint hash3Val = hash2Val ^ ((uint)CrcTable[buffer[cur + 2]] << 5);
-        uint hash4Val = hash3Val ^ ((uint)CrcTable[buffer[cur + 3]] << 13);
-
-        uint h2 = hash2Val & (kHash2Size - 1);
-        uint h3 = kHash2Size + (hash3Val & (kHash3Size - 1));
-        uint h4 = kFixHashSize + (hash4Val & (uint)_hashMask);
+        LzHash.Compute(buffer, cur, _hashMask, out uint h2, out uint h3, out uint h4);
 
         int curMatch = _hash[h4];
         _hash[h2] = _pos;

@@ -285,16 +285,7 @@ public sealed class XzSeekableStream : Stream
     }
 
     private static void ReadExact(Stream stream, Span<byte> buffer)
-    {
-        int offset = 0;
-        while (offset < buffer.Length)
-        {
-            int read = stream.Read(buffer[offset..]);
-            if (read == 0)
-                throw new LzmaDataErrorException("Unexpected end of XZ stream.");
-            offset += read;
-        }
-    }
+        => stream.ReadExact(buffer, "Unexpected end of XZ stream.");
 
     private void ReturnCachedBuffer()
     {
