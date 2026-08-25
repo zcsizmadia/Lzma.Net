@@ -161,36 +161,10 @@ public sealed class XzCompressOptions
     /// </summary>
     internal int ResolvedThreads => Threads == 0 ? Environment.ProcessorCount : Threads;
 
-    /// <summary>
-    /// Returns options whose effective dictionary is capped at the input size,
-    /// for APIs that know the full input up front. A dictionary larger than the
-    /// input cannot improve compression but costs proportional match-finder
-    /// memory (~650 MB at preset 9). An explicit <see cref="DictionarySize"/>
-    /// always wins; the cap never raises the preset's dictionary.
-    /// </summary>
-    internal XzCompressOptions EffectiveForInputSize(long inputLength)
-    {
-        if (DictionarySize.HasValue)
-            return this;
-
-        int presetDict = Lzma.LzmaEncoderProperties.FromPreset(Preset, Extreme).DictionarySize;
-        int capped = (int)Math.Clamp(inputLength, 4096, presetDict);
-        if (capped >= presetDict)
-            return this;
-
-        return new XzCompressOptions
-        {
-            Preset = Preset,
-            Extreme = Extreme,
-            Threads = Threads,
-            CheckType = CheckType,
-            DictionarySize = capped,
-            BlockSize = BlockSize,
-            Filter = Filter,
-            DeltaDistance = DeltaDistance,
-            Progress = Progress,
-        };
-    }
+    // The effective dictionary is capped per block by XzCompressStream, which
+    // applies to the streaming and one-shot APIs alike. A per-options
+    // EffectiveForInputSize() used to do this for one-shot compression only,
+    // which made the two APIs disagree on the bytes they produced.
 
     /// <summary>
     /// Gets the XZ check type constant used internally.
