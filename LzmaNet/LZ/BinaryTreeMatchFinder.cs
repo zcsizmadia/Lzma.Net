@@ -24,6 +24,7 @@ internal sealed class BinaryTreeMatchFinder : IMatchFinder
     private readonly int _windowSize;
     private readonly int _cyclicBufferSize;
     private readonly int _cyclicMask;
+    private readonly int _maxMatchDelta;
     private readonly int _hashMask;
     private readonly int _cutValue;
     private readonly int _matchMaxLen;
@@ -59,6 +60,17 @@ internal sealed class BinaryTreeMatchFinder : IMatchFinder
         _cyclicMask = _cyclicBufferSize - 1;
         _matchMaxLen = matchMaxLen;
         _cutValue = cutValue;
+
+        // Tree nodes are addressed by cyclic slot, so a candidate at delta ==
+        // _cyclicBufferSize maps onto the son[] slot pair of the position being
+        // inserted: adopting its subtrees would read the new node's own
+        // half-written links and can re-link a walk ancestor as its descendant,
+        // breaking the ordering that the len0/len1 shortcut relies on. Cut one
+        // short of the cyclic size (the reference LzFind instead oversizes the
+        // cyclic buffer to windowSize + 1, which here would double _son).
+        // Distances must also stay within the dictionary to remain decodable,
+        // which binds first when the window is not a power of two.
+        _maxMatchDelta = Math.Min(_windowSize, _cyclicBufferSize - 1);
 
         int hashBits = dictSize < (1 << 16) ? 16 : dictSize < (1 << 20) ? 18 : 20;
         _hashMask = (1 << hashBits) - 1;
@@ -228,7 +240,7 @@ internal sealed class BinaryTreeMatchFinder : IMatchFinder
         int ptr1 = 2 * (_pos & _cyclicMask);     // left subtree slot of the new node
         int len0 = 0, len1 = 0;
         int count = _cutValue;
-        int windowFloor = _pos - _windowSize;
+        int windowFloor = _pos - _maxMatchDelta;
 
         while (true)
         {
@@ -298,7 +310,7 @@ internal sealed class BinaryTreeMatchFinder : IMatchFinder
         int ptr1 = 2 * (_pos & _cyclicMask);
         int len0 = 0, len1 = 0;
         int count = _cutValue;
-        int windowFloor = _pos - _windowSize;
+        int windowFloor = _pos - _maxMatchDelta;
 
         while (true)
         {
