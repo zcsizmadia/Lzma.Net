@@ -12,10 +12,12 @@ namespace LzmaNet.Tests;
 [NotInParallel(nameof(OptimalAndFormatTests))]
 public class OptimalAndFormatTests
 {
-    // CI runners (Linux: ~14 GB, no swap) get OOM-killed if several BT4
-    // encoders with preset-default dictionaries (up to 64 MB dict = ~650 MB of
-    // tables each) run in parallel. Test data is at most a few MB, so a 4 MB
-    // dictionary exercises the identical code paths at a fraction of the memory.
+    // Only for tests that drive Lzma2Encoder/LzmaEncoderProperties directly.
+    // The per-block dictionary cap lives in XzCompressStream, so the direct
+    // encoder API would otherwise allocate the preset's full dictionary (up to
+    // 64 MB = ~650 MB of BT4 tables) regardless of how little data is encoded.
+    // Tests going through XzCompressor/XzCompressStream need no such cap: the
+    // effective dictionary is already the block length.
     private const int TestDictSize = 1 << 22;
 
     /// <summary>
@@ -51,7 +53,7 @@ public class OptimalAndFormatTests
         // 4 MB of text-like data spans many LZMA2 chunk boundaries — the exact
         // regression scenario for the BT4 lenLimit/tree-adoption bug.
         byte[] original = MakeTextLikeData(4 * 1024 * 1024);
-        byte[] compressed = XzCompressor.Compress(original, new XzCompressOptions { Preset = preset, DictionarySize = TestDictSize });
+        byte[] compressed = XzCompressor.Compress(original, new XzCompressOptions { Preset = preset });
         byte[] decompressed = XzCompressor.Decompress(compressed);
         await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
     }
@@ -64,7 +66,7 @@ public class OptimalAndFormatTests
         for (int i = 0; i < original.Length; i++)
             original[i] = (byte)(i % 256 < 200 ? i % 37 + i / 65536 : rng.Next(256));
 
-        byte[] compressed = XzCompressor.Compress(original, new XzCompressOptions { Preset = 9, DictionarySize = TestDictSize });
+        byte[] compressed = XzCompressor.Compress(original, new XzCompressOptions { Preset = 9 });
         await Assert.That(XzCompressor.Decompress(compressed).SequenceEqual(original)).IsTrue();
     }
 
@@ -112,8 +114,8 @@ public class OptimalAndFormatTests
     public async Task OptimalPreset_MultiThreaded_MatchesSingleThreaded()
     {
         byte[] original = MakeTextLikeData(2 * 1024 * 1024, seed: 9);
-        var mt = new XzCompressOptions { Preset = 7, Threads = 4, BlockSize = 256 * 1024, DictionarySize = TestDictSize };
-        var st = new XzCompressOptions { Preset = 7, Threads = 1, BlockSize = 256 * 1024, DictionarySize = TestDictSize };
+        var mt = new XzCompressOptions { Preset = 7, Threads = 4, BlockSize = 256 * 1024 };
+        var st = new XzCompressOptions { Preset = 7, Threads = 1, BlockSize = 256 * 1024 };
 
         byte[] a = XzCompressor.Compress(original, mt);
         byte[] b = XzCompressor.Compress(original, st);
