@@ -15,9 +15,17 @@ namespace LzmaNet;
 /// a single raw LZMA stream. Compatible with <c>xz --format=lzma</c> and 7-Zip.
 /// </summary>
 /// <remarks>
+/// <para>
 /// The legacy format has no blocks or integrity check; the whole input is
-/// buffered and compressed as one stream when the stream is disposed. Prefer
-/// the XZ format (<see cref="XzCompressStream"/>) for new applications.
+/// buffered and compressed as one stream when the stream is disposed. Memory
+/// use is therefore proportional to the input, and the input cannot exceed
+/// <see cref="MaxInputSize"/> — the header stores the uncompressed size up
+/// front, so the encoder needs the complete input before it can write anything.
+/// </para>
+/// <para>
+/// Prefer the XZ format (<see cref="XzCompressStream"/>) for new applications:
+/// it compresses block by block with bounded memory and no size limit.
+/// </para>
 /// </remarks>
 public sealed class LzmaAloneCompressStream : Stream
 {
@@ -66,12 +74,35 @@ public sealed class LzmaAloneCompressStream : Stream
     /// <inheritdoc/>
     public override void Write(byte[] buffer, int offset, int count) => Write(buffer.AsSpan(offset, count));
 
+    /// <summary>
+    /// Largest input this stream can compress. The whole input is buffered into
+    /// a single array before encoding, so the limit is the longest array the
+    /// runtime allows. Use <see cref="XzCompressStream"/> for larger inputs.
+    /// </summary>
+    public static int MaxInputSize => Array.MaxLength;
+
+    /// <summary>
+    /// Throws when the input would grow past <see cref="MaxInputSize"/>. Checked
+    /// per write so the failure names the real constraint, rather than surfacing
+    /// as "Stream was too long" from the underlying buffer.
+    /// </summary>
+    internal static void EnsureWithinInputLimit(long buffered, long incoming)
+    {
+        if (buffered + incoming > MaxInputSize)
+            throw new LzmaMemoryLimitException(
+                $"The .lzma format buffers the whole input before encoding, so it is limited to " +
+                $"{MaxInputSize:N0} bytes. Use the XZ format for larger inputs.");
+    }
+
     /// <inheritdoc/>
+    /// <exception cref="LzmaMemoryLimitException">The total input would exceed
+    /// <see cref="MaxInputSize"/>.</exception>
     public override void Write(ReadOnlySpan<byte> buffer)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (_finished)
             throw new InvalidOperationException("Stream has been finalized.");
+        EnsureWithinInputLimit(_inputBuffer.Length, buffer.Length);
         _inputBuffer.Write(buffer);
     }
 
@@ -251,7 +282,9 @@ public sealed class LzmaAloneDecompressStream : Stream
                 $".lzma header claims {declaredSize:N0} uncompressed bytes, exceeding the configured or supported limit.");
 
         // The range decoder needs the whole compressed payload in memory.
-        using var compressed = new MemoryStream();
+        // Presize when the length is known: without it a multi-MB payload is
+        // repeatedly doubled and re-copied through the large object heap.
+        using var compressed = new MemoryStream(RemainingLengthHint(_baseStream));
         _baseStream.CopyTo(compressed);
         var input = compressed.GetBuffer().AsSpan(0, (int)compressed.Length);
 
@@ -327,6 +360,19 @@ public sealed class LzmaAloneDecompressStream : Stream
             throw new LzmaMemoryLimitException();
         }
         _progress?.Report(_outputLength);
+    }
+
+    /// <summary>
+    /// Bytes left in <paramref name="stream"/> when it can report that cheaply,
+    /// otherwise 0 (meaning "no hint"). Used only to presize a buffer.
+    /// </summary>
+    internal static int RemainingLengthHint(Stream stream)
+    {
+        if (!stream.CanSeek)
+            return 0;
+
+        long remaining = stream.Length - stream.Position;
+        return remaining > 0 && remaining <= Array.MaxLength ? (int)remaining : 0;
     }
 
     /// <summary>

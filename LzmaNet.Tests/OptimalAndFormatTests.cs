@@ -312,6 +312,86 @@ public class OptimalAndFormatTests
     }
 
     [Test]
+    public async Task LzmaAlone_InputLimit_IsReportedAsALimitNotABufferFailure()
+    {
+        // Writing past the buffered-input ceiling used to surface as the
+        // underlying buffer's "Stream was too long", which named neither the
+        // format's constraint nor a way around it.
+        await Assert.That(() => LzmaAloneCompressStream.EnsureWithinInputLimit(
+                LzmaAloneCompressStream.MaxInputSize - 8, 9))
+            .ThrowsExactly<LzmaMemoryLimitException>();
+
+        await Assert.That(() => LzmaAloneCompressStream.EnsureWithinInputLimit(0, 1L << 40))
+            .ThrowsExactly<LzmaMemoryLimitException>();
+    }
+
+    [Test]
+    public async Task LzmaAlone_InputLimit_AllowsWritesUpToTheCeiling()
+    {
+        await Assert.That(() => LzmaAloneCompressStream.EnsureWithinInputLimit(
+                LzmaAloneCompressStream.MaxInputSize - 8, 8))
+            .ThrowsNothing();
+        await Assert.That(() => LzmaAloneCompressStream.EnsureWithinInputLimit(0, 0)).ThrowsNothing();
+    }
+
+    [Test]
+    public async Task LzmaAlone_RemainingLengthHint_OnlyForSeekableStreams()
+    {
+        var seekable = new MemoryStream(new byte[1000]);
+        seekable.Position = 400;
+        await Assert.That(LzmaAloneDecompressStream.RemainingLengthHint(seekable)).IsEqualTo(600);
+
+        // Fully consumed: no useful hint.
+        seekable.Position = 1000;
+        await Assert.That(LzmaAloneDecompressStream.RemainingLengthHint(seekable)).IsEqualTo(0);
+
+        using var nonSeekable = new NonSeekableStream(new byte[1000]);
+        await Assert.That(LzmaAloneDecompressStream.RemainingLengthHint(nonSeekable)).IsEqualTo(0);
+    }
+
+    /// <summary>A read-only stream that refuses to report its length.</summary>
+    private sealed class NonSeekableStream(byte[] data) : Stream
+    {
+        private readonly MemoryStream _inner = new(data);
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+        public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, count);
+        public override int Read(Span<byte> buffer) => _inner.Read(buffer);
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) _inner.Dispose();
+            base.Dispose(disposing);
+        }
+    }
+
+    [Test]
+    public async Task LzmaAlone_NonSeekableInput_StillRoundTrips()
+    {
+        byte[] original = MakeTextLikeData(200_000, seed: 31);
+        using var ms = new MemoryStream();
+        using (var enc = new LzmaAloneCompressStream(ms, preset: 3, leaveOpen: true))
+            enc.Write(original);
+
+        using var source = new NonSeekableStream(ms.ToArray());
+        using var dec = new LzmaAloneDecompressStream(source, leaveOpen: true);
+        using var output = new MemoryStream();
+        dec.CopyTo(output);
+
+        await Assert.That(output.ToArray().SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
     public async Task LzmaAlone_UnknownSizeGrowth_NeverExceedsAllocatableLength()
     {
         // Growing from a 1 GB buffer used to clamp the request to int.MaxValue,
