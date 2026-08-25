@@ -210,9 +210,7 @@ internal sealed class LzmaEncoder : IDisposable
 
         while (pos < chunkEnd)
         {
-            long produced = rc.BytesWritten;
-            if (produced >= sizeLimit
-                || (limited && produced >= pos - chunkStart && pos - chunkStart >= 16384))
+            if (ShouldAbandonChunk(rc.BytesWritten, sizeLimit, limited, pos, chunkStart))
             {
                 // Incompressible: give up early, but keep feeding the dictionary
                 // so later chunks can still match against this data.
@@ -237,10 +235,7 @@ internal sealed class LzmaEncoder : IDisposable
                 if (_matchFinder.Available < 2)
                 {
                     // Encode remaining as literals
-                    rc.EncodeBit(ref _isMatch[(_state << LzmaConstants.kNumPosStatesBitsMax) + posState], 0);
-                    EncodeLiteral(rc, block, block[pos], pos > 0 ? block[pos - 1] : (byte)0, pos);
-                    _matchFinder.MovePos();
-                    pos++;
+                    EmitLiteralAt(rc, block, ref pos, posState);
                     continue;
                 }
 
@@ -373,6 +368,29 @@ internal sealed class LzmaEncoder : IDisposable
         // vectorized compare stays inside the block.
         int srcPos = pos - dist - 1;
         return LZ.MatchLength.Common(block, srcPos, pos, maxLen);
+    }
+
+    /// <summary>
+    /// Whether the chunk should be abandoned as incompressible: the size limit is
+    /// reached, or output has caught up with input after a warm-up window. The
+    /// caller stores the chunk uncompressed instead, so the dictionary must still
+    /// be fed past the abandoned region.
+    /// </summary>
+    private bool ShouldAbandonChunk(long produced, long sizeLimit, bool limited, int pos, int chunkStart)
+        => produced >= sizeLimit
+           || (limited && produced >= pos - chunkStart && pos - chunkStart >= 16384);
+
+    /// <summary>
+    /// Emits the byte at <paramref name="pos"/> as a literal and advances one
+    /// position. Used where no match can be formed — fewer than two bytes remain,
+    /// or the parse chose a literal.
+    /// </summary>
+    private void EmitLiteralAt(RangeEncoder rc, ReadOnlySpan<byte> block, ref int pos, int posState)
+    {
+        rc.EncodeBit(ref _isMatch[(_state << LzmaConstants.kNumPosStatesBitsMax) + posState], 0);
+        EncodeLiteral(rc, block, block[pos], pos > 0 ? block[pos - 1] : (byte)0, pos);
+        _matchFinder.MovePos();
+        pos++;
     }
 
     private void EncodeLiteral(RangeEncoder rc, ReadOnlySpan<byte> input, byte curByte, byte prevByte, int pos)
@@ -646,9 +664,7 @@ internal sealed class LzmaEncoder : IDisposable
 
         while (pos < chunkEnd)
         {
-            long producedBytes = rc.BytesWritten;
-            if (producedBytes >= sizeLimit
-                || (limited && producedBytes >= pos - chunkStart && pos - chunkStart >= 16384))
+            if (ShouldAbandonChunk(rc.BytesWritten, sizeLimit, limited, pos, chunkStart))
             {
                 _matchFinder.Skip(chunkEnd - pos);
                 return -1;
@@ -658,10 +674,7 @@ internal sealed class LzmaEncoder : IDisposable
 
             if (_matchFinder.Available < 2)
             {
-                rc.EncodeBit(ref _isMatch[(_state << LzmaConstants.kNumPosStatesBitsMax) + posState], 0);
-                EncodeLiteral(rc, block, block[pos], pos > 0 ? block[pos - 1] : (byte)0, pos);
-                _matchFinder.MovePos();
-                pos++;
+                EmitLiteralAt(rc, block, ref pos, posState);
                 continue;
             }
 
