@@ -94,7 +94,7 @@ The filters in `src/LzmaNet/Filters/` are ported from liblzma C source. When mod
 - `FilterFactory` creates filter instances by filter ID
 
 ### Public API Surface
-- Public types: `XzCompressor`, `XzCompressStream`, `XzDecompressStream`, `XzSeekableStream`, `XzCompressOptions`, `XzDecompressOptions`, `XzCheckType`, `XzFilterType`, `LzmaException`, `LzmaDataErrorException`, `LzmaFormatException`, `LzmaMemoryLimitException`
+- Public types: `XzCompressor`, `XzCompressStream`, `XzDecompressStream`, `XzSeekableStream`, `XzCompressOptions`, `XzDecompressOptions`, `XzCheckType`, `XzFilterType`, `LzmaAloneCompressStream`, `LzmaAloneDecompressStream`, `LzmaException`, `LzmaDataErrorException`, `LzmaFormatException`, `LzmaMemoryLimitException`
 - Everything else is `internal`
 - XML documentation is generated (`GenerateDocumentationFile`)
 - Async variants use `ReadOnlyMemory<byte>` instead of `ReadOnlySpan<byte>` (spans cannot cross `await` boundaries)
