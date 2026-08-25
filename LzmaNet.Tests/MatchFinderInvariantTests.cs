@@ -119,6 +119,50 @@ public class MatchFinderInvariantTests
     }
 
     /// <summary>
+    /// The hash chain's window slide only runs from SetInput, so feeding it
+    /// incrementally must keep the buffer near window + cyclic. Feeding a whole
+    /// block up front instead leaves the buffer grown to the block size, which
+    /// costs a second copy of every in-flight block.
+    /// </summary>
+    [Test]
+    public async Task HashChain_FedIncrementally_KeepsBufferNearTheWindow()
+    {
+        const int dictSize = 1 << 16;   // 64 KB window
+        const int chunk = 1 << 16;      // the LZMA2 encoder's chunk size
+        byte[] data = MakeSmallAlphabet(4 << 20, seed: 8);  // 4 MB "block"
+
+        using var finder = new HashChainMatchFinder(dictSize, 273, cutValue: 32);
+        for (int pos = 0; pos < data.Length; pos += chunk)
+        {
+            int n = Math.Min(chunk, data.Length - pos);
+            finder.SetInput(data.AsSpan(pos, n));
+            finder.Skip(n);
+        }
+
+        // Steady state is window + cyclic + 64 KB + matchMaxLen + 4096; anything
+        // near the 4 MB block size means the slide never ran.
+        await Assert.That(finder.BufferLength).IsLessThan(1 << 20);
+    }
+
+    [Test]
+    public async Task HashChainPresets_BlockMuchLargerThanDictionary_RoundTrip()
+    {
+        // Blocks far larger than the dictionary are where incremental feeding
+        // matters; verify the encoder still produces decodable output there.
+        byte[] original = MakeSmallAlphabet(4 << 20, seed: 12);
+        var opts = new XzCompressOptions
+        {
+            Preset = 1,                  // hash chain
+            DictionarySize = 1 << 16,    // 64 KB dictionary
+            BlockSize = 4 << 20,         // 64x the dictionary
+            Threads = 1,
+        };
+
+        byte[] compressed = XzCompressor.Compress(original, opts);
+        await Assert.That(XzCompressor.Decompress(compressed).SequenceEqual(original)).IsTrue();
+    }
+
+    /// <summary>
     /// End-to-end counterpart: input several times larger than the dictionary at a
     /// BT4 preset, which is the regime every other round-trip test avoids by
     /// capping the dictionary at or above the data length.
