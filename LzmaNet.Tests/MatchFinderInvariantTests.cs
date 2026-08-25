@@ -182,6 +182,70 @@ public class MatchFinderInvariantTests
         await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
     }
 
+    /// <summary>
+    /// Reads the LZMA2 dictionary-size byte out of the first block header, which
+    /// is how the effective dictionary shows up in the output.
+    /// </summary>
+    private static int EffectiveDictionarySize(byte[] xz)
+    {
+        // Stream header is 12 bytes; the block header follows. Its first byte is
+        // the header size in 4-byte units, then flags, then the filter chain:
+        // for a lone LZMA2 filter that is filter id 0x21, property size 1, and
+        // the dictionary byte.
+        int p = 12;
+        int headerSize = (xz[p] + 1) * 4;
+        var header = xz.AsSpan(p, headerSize);
+        int i = 2;                       // skip header-size byte and flags
+        while (header[i] != 0x21) i++;   // LZMA2 filter id
+        i += 2;                          // filter id, property-size byte
+        return LzmaNet.Lzma2.Lzma2Encoder.DecodeDictSize(header[i]);
+    }
+
+    [Test]
+    [Arguments(7)]
+    [Arguments(8)]
+    [Arguments(9)]
+    public async Task DefaultPresets_EffectiveDictionaryIsTheBlockLength(int preset)
+    {
+        // Presets 7-9 nominally mean 16/32/64 MB dictionaries. Encoding less than
+        // that must not allocate for the nominal size — the effective dictionary
+        // is the block length, which is why these presets can be tested at all
+        // without the multi-hundred-MB table allocations they used to imply.
+        const int blockSize = 256 * 1024;
+        byte[] original = MakeSmallAlphabet(blockSize * 3, seed: 44);
+
+        byte[] compressed = XzCompressor.Compress(original,
+            new XzCompressOptions { Preset = preset, BlockSize = blockSize });
+
+        await Assert.That(EffectiveDictionarySize(compressed)).IsLessThanOrEqualTo(blockSize);
+        await Assert.That(XzCompressor.Decompress(compressed).SequenceEqual(original)).IsTrue();
+    }
+
+    /// <summary>
+    /// Exercises the BT4 buffer slide and table rebase repeatedly: the input is
+    /// many times the dictionary, so the finder must slide and rebase its hash
+    /// and son tables dozens of times within a single block. A full 64 MB-
+    /// dictionary run at this ratio would need several GB and does not belong in
+    /// CI, but the slide arithmetic it would exercise is the same.
+    /// </summary>
+    [Test]
+    public async Task OptimalPreset_ManyWindowSlides_RoundTrips()
+    {
+        const int dictSize = 1 << 18;   // 256 KB window
+        byte[] original = MakeSmallAlphabet(dictSize * 40, seed: 61);  // 10 MB, 40x the window
+
+        var opts = new XzCompressOptions
+        {
+            Preset = 7,
+            DictionarySize = dictSize,
+            BlockSize = dictSize * 40,   // one block, so the slide runs within it
+            Threads = 1,
+        };
+
+        byte[] compressed = XzCompressor.Compress(original, opts);
+        await Assert.That(XzCompressor.Decompress(compressed).SequenceEqual(original)).IsTrue();
+    }
+
     [Test]
     public async Task OptimalPreset_StreamedInputLargerThanDictionary_RoundTrips()
     {

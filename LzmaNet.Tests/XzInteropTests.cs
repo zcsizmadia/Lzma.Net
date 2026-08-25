@@ -99,7 +99,7 @@ public class XzInteropTests
         for (int i = 0; i < original.Length; i++)
             original[i] = (byte)(i * 7 + i / 13);
 
-        byte[] compressed = await XzCompressor.CompressAsync(original, new XzCompressOptions { Preset = preset, DictionarySize = preset >= 7 ? 1 << 22 : null });
+        byte[] compressed = await XzCompressor.CompressAsync(original, new XzCompressOptions { Preset = preset });
         byte[] decompressed = await XzDecompressAsync(compressed);
         await Assert.That(decompressed.SequenceEqual(original)).IsTrue();
     }
