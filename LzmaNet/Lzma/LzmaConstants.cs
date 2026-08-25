@@ -16,6 +16,14 @@ internal static class LzmaConstants
     public const int kMatchMinLen = 2;
     public const int kMatchMaxLen = 273;
 
+    /// <summary>
+    /// Largest supported dictionary, 512 MB. Both match finders round the window
+    /// up to a power-of-two cyclic size and then size buffers from window +
+    /// cyclic (the binary tree also allocates two int slots per cyclic position),
+    /// so anything above this overflows the signed 32-bit sizing arithmetic.
+    /// </summary>
+    public const int kMaxDictionarySize = 1 << 29;
+
     public const int kNumAlignBits = 4;
     public const int kAlignTableSize = 1 << kNumAlignBits; // 16
     public const uint kAlignMask = kAlignTableSize - 1;

@@ -143,8 +143,9 @@ internal sealed class LzmaEncoderProperties
             throw new ArgumentOutOfRangeException(nameof(Lp));
         if (Pb < 0 || Pb > LzmaConstants.kNumPosStatesBitsMax)
             throw new ArgumentOutOfRangeException(nameof(Pb));
-        if (DictionarySize < 1)
-            throw new ArgumentOutOfRangeException(nameof(DictionarySize));
+        if (DictionarySize < 1 || DictionarySize > LzmaConstants.kMaxDictionarySize)
+            throw new ArgumentOutOfRangeException(nameof(DictionarySize),
+                $"Dictionary size must be 1-{LzmaConstants.kMaxDictionarySize} bytes.");
         if (NiceLength < LzmaConstants.kMatchMinLen || NiceLength > LzmaConstants.kMatchMaxLen)
             throw new ArgumentOutOfRangeException(nameof(NiceLength));
     }
