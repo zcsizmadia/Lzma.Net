@@ -161,6 +161,86 @@ public class OptimalAndFormatTests
     }
 
     [Test]
+    [Arguments(1)]
+    [Arguments(6)]
+    [Arguments(9)]
+    public async Task OneShotAndStreaming_ProduceIdenticalBytes(int preset)
+    {
+        // The dictionary cap used to live only in the one-shot API, so the two
+        // public entry points emitted different bytes for the same input and
+        // options — breaking golden files and content-addressed storage.
+        byte[] original = MakeTextLikeData(50_000);
+        var opts = new XzCompressOptions { Preset = preset };
+
+        byte[] oneShot = XzCompressor.Compress(original, opts);
+
+        using var ms = new MemoryStream();
+        using (var xz = new XzCompressStream(ms, opts, leaveOpen: true))
+            xz.Write(original);
+        byte[] streamed = ms.ToArray();
+
+        await Assert.That(streamed.SequenceEqual(oneShot)).IsTrue();
+        await Assert.That(XzCompressor.Decompress(streamed).SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    public async Task CompressStream_SmallInputAtHighPreset_UsesInputSizedDictionary()
+    {
+        // Preset 9 nominally means a 64 MB dictionary and ~650 MB of BT4 tables.
+        // Streaming 4 KB must now cap the same way one-shot compression does,
+        // which shows up as output identical to an explicit 4096-byte dictionary.
+        byte[] original = MakeTextLikeData(4096);
+
+        using var ms = new MemoryStream();
+        using (var xz = new XzCompressStream(ms, new XzCompressOptions { Preset = 9 }, leaveOpen: true))
+            xz.Write(original);
+
+        byte[] explicit4k = XzCompressor.Compress(original,
+            new XzCompressOptions { Preset = 9, DictionarySize = 4096 });
+
+        await Assert.That(ms.ToArray().SequenceEqual(explicit4k)).IsTrue();
+    }
+
+    [Test]
+    public async Task ShortFinalBlock_MultiThreadedMatchesSingleThreaded()
+    {
+        // 2.5 blocks: the final short block caps to a smaller dictionary than the
+        // full ones, which rebuilds the single-threaded encoder mid-stream. The
+        // parallel path must still produce identical bytes.
+        byte[] original = MakeTextLikeData(160 * 1024, seed: 17);
+        var st = new XzCompressOptions { Preset = 6, BlockSize = 64 * 1024, Threads = 1 };
+        var mt = new XzCompressOptions { Preset = 6, BlockSize = 64 * 1024, Threads = 4 };
+
+        byte[] a = XzCompressor.Compress(original, st);
+        byte[] b = XzCompressor.Compress(original, mt);
+
+        await Assert.That(a.SequenceEqual(b)).IsTrue();
+        await Assert.That(XzCompressor.Decompress(a).SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    public async Task ExplicitDictionaryIsNotCappedByBlockSize()
+    {
+        // An explicit dictionary is the caller's decision and must survive even
+        // when it is far larger than a block.
+        byte[] original = MakeTextLikeData(160 * 1024, seed: 23);
+        var opts = new XzCompressOptions
+        {
+            Preset = 6,
+            BlockSize = 64 * 1024,
+            DictionarySize = 1 << 22,
+            Threads = 1,
+        };
+
+        byte[] compressed = XzCompressor.Compress(original, opts);
+        byte[] capped = XzCompressor.Compress(original,
+            new XzCompressOptions { Preset = 6, BlockSize = 64 * 1024, Threads = 1 });
+
+        await Assert.That(compressed.SequenceEqual(capped)).IsFalse();
+        await Assert.That(XzCompressor.Decompress(compressed).SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
     public async Task LzmaAlone_ClampsDictionaryToInputSize()
     {
         byte[] original = MakeTextLikeData(10_000);
