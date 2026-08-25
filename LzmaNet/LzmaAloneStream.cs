@@ -257,13 +257,12 @@ public sealed class LzmaAloneDecompressStream : Stream
                 if (outPos + Step + LzmaConstants.kMatchMaxLen > buf.Length)
                 {
                     long needed = (long)outPos + Step + LzmaConstants.kMatchMaxLen;
-                    if (outPos >= _maxOutputSize || needed > int.MaxValue)
+                    if (outPos >= _maxOutputSize || needed > MaxOutputCapacity)
                     {
                         ArrayPool<byte>.Shared.Return(buf);
                         throw new LzmaMemoryLimitException();
                     }
-                    byte[] bigger = ArrayPool<byte>.Shared.Rent((int)Math.Min(
-                        Math.Max((long)buf.Length * 2, needed), int.MaxValue));
+                    byte[] bigger = ArrayPool<byte>.Shared.Rent(NextOutputCapacity(buf.Length, needed));
                     buf.AsSpan(0, outPos).CopyTo(bigger);
                     ArrayPool<byte>.Shared.Return(buf);
                     buf = bigger;
@@ -306,6 +305,23 @@ public sealed class LzmaAloneDecompressStream : Stream
         }
         _progress?.Report(_outputLength);
     }
+
+    /// <summary>
+    /// Largest output buffer an unknown-size decode can grow to. ArrayPool serves
+    /// requests this large by allocating directly, and the runtime refuses any
+    /// array longer than <see cref="Array.MaxLength"/>.
+    /// </summary>
+    internal static int MaxOutputCapacity => Array.MaxLength;
+
+    /// <summary>
+    /// Next capacity for the growing unknown-size output buffer: double, but
+    /// never past <see cref="MaxOutputCapacity"/>. Clamping to int.MaxValue
+    /// instead asked for more than the runtime can allocate, so the 1 GB
+    /// doubling step failed with <see cref="OutOfMemoryException"/> however much
+    /// memory was free.
+    /// </summary>
+    internal static int NextOutputCapacity(int currentLength, long needed)
+        => (int)Math.Min(Math.Max((long)currentLength * 2, needed), MaxOutputCapacity);
 
     private void ReturnOutputBuffer()
     {

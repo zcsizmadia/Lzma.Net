@@ -232,6 +232,28 @@ public class OptimalAndFormatTests
     }
 
     [Test]
+    public async Task LzmaAlone_UnknownSizeGrowth_NeverExceedsAllocatableLength()
+    {
+        // Growing from a 1 GB buffer used to clamp the request to int.MaxValue,
+        // which is longer than any array the runtime will allocate, so
+        // ArrayPool.Rent threw OutOfMemoryException however much memory was free
+        // — capping unknown-size streams at ~1 GB.
+        const int Step = 1 << 20;
+        long needed = (1L << 30) + Step + 273;
+        int next = LzmaAloneDecompressStream.NextOutputCapacity(1 << 30, needed);
+
+        await Assert.That(next).IsLessThanOrEqualTo(Array.MaxLength);
+        await Assert.That((long)next).IsGreaterThanOrEqualTo(needed);
+    }
+
+    [Test]
+    public async Task LzmaAlone_UnknownSizeGrowth_DoublesWellBelowTheLimit()
+    {
+        int next = LzmaAloneDecompressStream.NextOutputCapacity(1 << 20, (1L << 20) + 4096);
+        await Assert.That(next).IsEqualTo(1 << 21);
+    }
+
+    [Test]
     public async Task LzmaAlone_MaxOutputSize_Enforced()
     {
         byte[] original = new byte[1024 * 1024];
@@ -347,6 +369,24 @@ public class LzmaAloneInteropTests
         var rng = new Random(12);
         for (int i = 0; i < original.Length; i++)
             original[i] = (byte)(i % 256 < 200 ? i % 41 : rng.Next(256));
+
+        byte[] compressed = await RunXzAsync("--compress --format=lzma --stdout --force", original);
+
+        using var dec = new LzmaAloneDecompressStream(new MemoryStream(compressed));
+        using var output = new MemoryStream();
+        dec.CopyTo(output);
+        await Assert.That(output.ToArray().SequenceEqual(original)).IsTrue();
+    }
+
+    [Test]
+    public async Task XzCompress_LzmaNetDecompress_UnknownSize_GrowsBufferSeveralTimes()
+    {
+        // The unknown-size path decodes in 1 MB steps starting from a 1 MB
+        // buffer, so 5 MB of output drives it through several growth steps.
+        byte[] original = new byte[5 * 1024 * 1024];
+        var rng = new Random(21);
+        for (int i = 0; i < original.Length; i++)
+            original[i] = (byte)(i % 256 < 220 ? i % 61 : rng.Next(256));
 
         byte[] compressed = await RunXzAsync("--compress --format=lzma --stdout --force", original);
 
