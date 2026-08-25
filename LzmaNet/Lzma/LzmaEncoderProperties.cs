@@ -133,6 +133,12 @@ internal sealed class LzmaEncoderProperties
     }
 
     /// <summary>
+    /// Returns a copy. Used to vary one setting (the effective dictionary size)
+    /// per block without disturbing the stream's configured properties.
+    /// </summary>
+    public LzmaEncoderProperties Clone() => (LzmaEncoderProperties)MemberwiseClone();
+
+    /// <summary>
     /// Validates the properties.
     /// </summary>
     public void Validate()

@@ -26,8 +26,10 @@ public sealed class XzCompressStream : Stream
     private readonly Stream _baseStream;
     private readonly bool _leaveOpen;
     private readonly int _checkType;
-    private readonly Lzma2Encoder _encoder;
+    private Lzma2Encoder? _encoder;
+    private int _encoderDictionarySize = -1;
     private readonly LzmaEncoderProperties _props;
+    private readonly bool _dictionaryExplicit;
     private readonly MemoryStream _inputBuffer;
     private readonly int _blockSize;
     private readonly int _threads;
@@ -62,7 +64,7 @@ public sealed class XzCompressStream : Stream
         if (opts.DictionarySize.HasValue)
             props.DictionarySize = opts.DictionarySize.Value;
         _props = props;
-        _encoder = new Lzma2Encoder(props);
+        _dictionaryExplicit = opts.DictionarySize.HasValue;
         _inputBuffer = new MemoryStream();
         _blockSize = opts.BlockSize ?? Math.Max(props.DictionarySize * 2, 1 << 20);
         (_filterId, _filterProps) = opts.ResolvedFilter;
@@ -207,7 +209,8 @@ public sealed class XzCompressStream : Stream
         var data = _inputBuffer.GetBuffer().AsMemory(0, len);
 
         var (unpaddedSize, uncompressedSize) = XzBlock.WriteBlock(
-            _baseStream, data, _encoder, _checkType, _filterId, _filterProps);
+            _baseStream, data, EncoderForBlock(PropsForBlock(len)),
+            _checkType, _filterId, _filterProps);
 
         _indexRecords.Add((unpaddedSize, uncompressedSize));
         ShiftInputBuffer(len);
@@ -222,12 +225,51 @@ public sealed class XzCompressStream : Stream
         var data = _inputBuffer.GetBuffer().AsMemory(0, len);
 
         var (unpaddedSize, uncompressedSize) = await XzBlock.WriteBlockAsync(
-            _baseStream, data, _encoder, _checkType, _filterId, _filterProps,
+            _baseStream, data, EncoderForBlock(PropsForBlock(len)),
+            _checkType, _filterId, _filterProps,
             cancellationToken).ConfigureAwait(false);
 
         _indexRecords.Add((unpaddedSize, uncompressedSize));
         ShiftInputBuffer(len);
         ReportProgress(uncompressedSize);
+    }
+
+    /// <summary>
+    /// Encoder properties for a block of the given length. Every XZ block starts
+    /// with a dictionary reset, so a block can never match further back than its
+    /// own length — a dictionary larger than the block is unusable, and capping
+    /// it costs nothing in ratio while saving match-finder memory proportional to
+    /// the dictionary (~650 MB at preset 9). Only the block header's dictionary
+    /// size byte changes. An explicitly configured dictionary is left alone.
+    /// </summary>
+    private LzmaEncoderProperties PropsForBlock(int blockLength)
+    {
+        if (_dictionaryExplicit)
+            return _props;
+
+        int capped = (int)Math.Clamp((long)blockLength, 4096, _props.DictionarySize);
+        if (capped >= _props.DictionarySize)
+            return _props;
+
+        var props = _props.Clone();
+        props.DictionarySize = capped;
+        return props;
+    }
+
+    /// <summary>
+    /// The shared single-threaded encoder, rebuilt when the block's effective
+    /// dictionary differs from the one it was created with (only the final,
+    /// short block normally differs).
+    /// </summary>
+    private Lzma2Encoder EncoderForBlock(LzmaEncoderProperties props)
+    {
+        if (_encoder is null || _encoderDictionarySize != props.DictionarySize)
+        {
+            _encoder?.Dispose();
+            _encoder = new Lzma2Encoder(props);
+            _encoderDictionarySize = props.DictionarySize;
+        }
+        return _encoder;
     }
 
     private void ReportProgress(long uncompressedBytes)
@@ -265,7 +307,7 @@ public sealed class XzCompressStream : Stream
         _inputBuffer.GetBuffer().AsSpan(0, len).CopyTo(rented);
         ShiftInputBuffer(len);
 
-        var props = _props;
+        var props = PropsForBlock(len);
         int checkType = _checkType;
         ulong filterId = _filterId;
         byte[]? filterProps = _filterProps;
@@ -392,7 +434,7 @@ public sealed class XzCompressStream : Stream
         if (!_disposed)
         {
             await FinalizeAsync(CancellationToken.None).ConfigureAwait(false);
-            _encoder.Dispose();
+            _encoder?.Dispose();
             _inputBuffer.Dispose();
             if (!_leaveOpen)
                 await _baseStream.DisposeAsync().ConfigureAwait(false);
@@ -418,7 +460,7 @@ public sealed class XzCompressStream : Stream
             if (disposing)
             {
                 Finalize_();
-                _encoder.Dispose();
+                _encoder?.Dispose();
                 _inputBuffer.Dispose();
                 if (!_leaveOpen)
                     _baseStream.Dispose();
