@@ -1014,6 +1014,39 @@ public class CoverageTests
         await Assert.That(() => opts.Validate()).ThrowsExactly<ArgumentOutOfRangeException>();
     }
 
+    [Test]
+    [Arguments(1 << 30)]           // 2 * cyclicBufferSize overflows to int.MinValue
+    [Arguments((1 << 29) + 1)]     // rounds the cyclic size up to 1 << 30, same overflow
+    [Arguments(int.MaxValue)]
+    public async Task XzCompressOptions_DictionarySizeTooLarge_Throws(int dictSize)
+    {
+        var opts = new XzCompressOptions { DictionarySize = dictSize };
+        await Assert.That(() => opts.Validate()).ThrowsExactly<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    public async Task XzCompressOptions_MaxDictionarySize_PassesValidation()
+    {
+        // Validation only — actually constructing a 512 MB-dictionary encoder
+        // would allocate several GB of match-finder tables.
+        var opts = new XzCompressOptions { DictionarySize = XzCompressOptions.MaxDictionarySize };
+        await Assert.That(() => opts.Validate()).ThrowsNothing();
+    }
+
+    [Test]
+    [Arguments(7)]  // BT4: allocates 2 int slots per cyclic position
+    [Arguments(1)]  // hash chain: window + cyclic byte buffer
+    public async Task OversizedDictionary_FailsValidation_NotDeepInsideMatchFinder(int preset)
+    {
+        // Previously the oversized value reached the match-finder constructor,
+        // where the negative buffer size surfaced as an ArgumentOutOfRangeException
+        // thrown by ArrayPool.Rent instead of a validation error naming the option.
+        var opts = new XzCompressOptions { Preset = preset, DictionarySize = 1 << 30 };
+        var ex = await Assert.That(() => new XzCompressStream(new MemoryStream(), opts))
+            .ThrowsExactly<ArgumentOutOfRangeException>();
+        await Assert.That(ex!.ParamName).IsEqualTo("DictionarySize");
+    }
+
     // ── LzmaEncoderProperties: extreme mode all presets ──────────────
 
     [Test]
@@ -1079,6 +1112,16 @@ public class CoverageTests
     public async Task EncoderProperties_InvalidDictSize_Throws()
     {
         var props = new LzmaEncoderProperties { DictionarySize = 0 };
+        await Assert.That(() => props.Validate()).ThrowsExactly<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    [Arguments(1 << 30)]
+    [Arguments((1 << 29) + 1)]
+    [Arguments(int.MaxValue)]
+    public async Task EncoderProperties_DictSizeAboveMaximum_Throws(int dictSize)
+    {
+        var props = new LzmaEncoderProperties { DictionarySize = dictSize };
         await Assert.That(() => props.Validate()).ThrowsExactly<ArgumentOutOfRangeException>();
     }
 
