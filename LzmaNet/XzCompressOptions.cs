@@ -73,9 +73,17 @@ public sealed class XzCompressOptions
     public XzCheckType CheckType { get; set; } = XzCheckType.Crc64;
 
     /// <summary>
+    /// Largest dictionary the encoder supports, 512 MB. Above this the match
+    /// finders' window sizing overflows 32-bit arithmetic, so larger values are
+    /// rejected by <see cref="Validate"/> rather than failing during encoding.
+    /// </summary>
+    public const int MaxDictionarySize = Lzma.LzmaConstants.kMaxDictionarySize;
+
+    /// <summary>
     /// Dictionary size in bytes. When <c>null</c> (default), determined by <see cref="Preset"/>.
-    /// Must be at least 4 KB. Larger dictionaries improve compression of repetitive data
-    /// at the cost of higher memory usage during both compression and decompression.
+    /// Must be between 4 KB and <see cref="MaxDictionarySize"/>. Larger dictionaries improve
+    /// compression of repetitive data at the cost of higher memory usage during both
+    /// compression and decompression.
     /// </summary>
     public int? DictionarySize { get; set; }
 
@@ -126,6 +134,9 @@ public sealed class XzCompressOptions
             throw new ArgumentOutOfRangeException(nameof(Threads), "Threads must be >= 0.");
         if (DictionarySize.HasValue && DictionarySize.Value < 4096)
             throw new ArgumentOutOfRangeException(nameof(DictionarySize), "Dictionary size must be at least 4 KB.");
+        if (DictionarySize.HasValue && DictionarySize.Value > MaxDictionarySize)
+            throw new ArgumentOutOfRangeException(nameof(DictionarySize),
+                $"Dictionary size must be at most {MaxDictionarySize} bytes (512 MB).");
         if (BlockSize.HasValue && BlockSize.Value < 4096)
             throw new ArgumentOutOfRangeException(nameof(BlockSize), "Block size must be at least 4 KB.");
         if (!Enum.IsDefined(Filter))
