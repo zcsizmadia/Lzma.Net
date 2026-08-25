@@ -29,6 +29,16 @@ if (args.Length > 0 && args[0] == "crc")
     return;
 }
 
+// "optimal" argument: encode-throughput benchmark for the BT4 optimal parser
+// (presets 7-9 and Extreme), the paths the main scenarios never touch because
+// they run preset 6. Reports MB/s and output size so a speedup can be checked
+// against an unchanged ratio.
+if (args.Length > 0 && args[0] == "optimal")
+{
+    RunOptimalParserBenchmark();
+    return;
+}
+
 // ── Test data ───────────────────────────────────────────────────────
 
 string cacheDir = Path.Combine(Path.GetTempPath(), "lzmanet-bench");
@@ -266,6 +276,58 @@ static void RunCrcMicroBenchmark()
 
     static void Report(string name, double gb, double seconds)
         => Console.WriteLine($"  {name}: {gb / seconds,7:F2} GB/s");
+}
+
+static void RunOptimalParserBenchmark()
+{
+    // Text-like data: many matches at many distances, so the parser's rep and
+    // match edges are both heavily exercised. Incompressible data would spend
+    // its time in the range coder instead and hide parser changes.
+    const int Size = 8 * 1024 * 1024;
+    string[] words =
+    [
+        "the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog",
+        "compression", "dictionary", "entropy", "window", "stream", "block",
+        "probability", "match", "distance", "literal", "encoder", "decoder",
+    ];
+    var rng = new Random(42);
+    using var ms = new MemoryStream(Size + 64);
+    while (ms.Length < Size)
+    {
+        ms.Write(System.Text.Encoding.ASCII.GetBytes(words[rng.Next(words.Length)]));
+        ms.WriteByte((byte)(rng.Next(16) == 0 ? '\n' : ' '));
+    }
+    byte[] data = ms.ToArray().AsSpan(0, Size).ToArray();
+    double mb = Size / (1024.0 * 1024.0);
+
+    // A fixed dictionary keeps the comparison honest across runs: the effective
+    // dictionary is otherwise the block length, which would vary with BlockSize.
+    const int DictSize = 1 << 22;
+
+    Console.WriteLine($"Optimal-parser encode benchmark over {Size / (1024 * 1024)} MB of text-like data (median of 3):");
+    Console.WriteLine($"{"Config",-22} {"MB/s",8} {"Size",12}");
+
+    foreach ((string name, int preset, bool extreme) in new[]
+    {
+        ("preset 7", 7, false),
+        ("preset 9", 9, false),
+        ("preset 9 --extreme", 9, true),
+    })
+    {
+        var opts = new XzCompressOptions
+        {
+            Preset = preset,
+            Extreme = extreme,
+            DictionarySize = DictSize,
+            Threads = 1,
+        };
+
+        _ = XzCompressor.Compress(data.AsSpan(0, 1 << 20), opts);   // warmup
+
+        long size = 0;
+        double seconds = MedianSeconds(3, () => size = XzCompressor.Compress(data, opts).Length);
+        Console.WriteLine($"{name,-22} {mb / seconds,8:F2} {size,12:N0}");
+    }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────

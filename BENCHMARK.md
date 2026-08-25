@@ -108,6 +108,27 @@ real-world data, at ~70% of its speed. Preset 9 gains nothing from threads at
 this input size — its default 128 MB blocks leave little to parallelize on
 212 MB (use a smaller `BlockSize` to trade a little ratio for scaling).
 
+### Optimal-parser encode throughput
+
+`dotnet run --project LzmaNet.Benchmark -c Release -- optimal` isolates the
+parser on 8 MB of text-like data with a fixed 4 MB dictionary, single-threaded
+(median of 3). It exists to measure parser changes without the Silesia
+download, and reports output size alongside speed so a speedup can be checked
+against an unchanged ratio.
+
+| Config | MB/s | Size |
+|---|---:|---:|
+| preset 7 | 1.47 | 986,644 |
+| preset 9 | 1.48 | 986,644 |
+| preset 9 `--extreme` | 1.48 | 986,536 |
+
+Length prices are cached per dynamic-programming window (see
+`PriceLenCached`). Nothing is emitted between the window's relaxation passes,
+so the length-coder probabilities cannot change while it runs and the cached
+prices are exactly the ones a per-edge computation would produce — the output
+is byte-for-byte unchanged. Measured against the pre-cache figures of 1.13 /
+1.14 / 1.18 MB/s, that is a **25–31% encode speedup** at identical output.
+
 ## Key Takeaways
 
 - **Compression ratio**: at preset 9 LzmaNet **matches `xz -9`** (23.0% vs 23.0% on Silesia, within 0.2% of its output size) using the same BT4 + optimal-parsing architecture. The default preset 6 stays speed-first: 27.0% at ~1.6× xz's speed.
