@@ -2,6 +2,7 @@
 
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Runtime.ExceptionServices;
 
 using LzmaNet.Lzma;
 using LzmaNet.RangeCoder;
@@ -151,6 +152,7 @@ public sealed class LzmaAloneDecompressStream : Stream
     private int _outputLength;
     private int _outputPos;
     private bool _decoded;
+    private ExceptionDispatchInfo? _failure;
     private bool _disposed;
 
     /// <summary>
@@ -197,8 +199,7 @@ public sealed class LzmaAloneDecompressStream : Stream
     public override int Read(Span<byte> buffer)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (!_decoded)
-            DecodeAll();
+        EnsureDecoded();
 
         int toCopy = Math.Min(buffer.Length, _outputLength - _outputPos);
         if (toCopy > 0)
@@ -209,10 +210,32 @@ public sealed class LzmaAloneDecompressStream : Stream
         return toCopy;
     }
 
+    /// <summary>
+    /// Decodes the stream on first read. A failed decode is latched and rethrown
+    /// on every later read: the payload has already been consumed, so retrying
+    /// cannot succeed, and reporting end-of-stream instead would let corrupt
+    /// input pass for an empty one.
+    /// </summary>
+    private void EnsureDecoded()
+    {
+        _failure?.Throw();
+        if (_decoded)
+            return;
+
+        try
+        {
+            DecodeAll();
+            _decoded = true;
+        }
+        catch (Exception ex)
+        {
+            _failure = ExceptionDispatchInfo.Capture(ex);
+            throw;
+        }
+    }
+
     private void DecodeAll()
     {
-        _decoded = true;
-
         // 13-byte header
         Span<byte> header = stackalloc byte[13];
         ReadExact(_baseStream, header);
