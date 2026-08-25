@@ -85,6 +85,13 @@ internal sealed class HashChainMatchFinder : IMatchFinder
         _streamPos = 0;
     }
 
+    /// <summary>
+    /// Current search-buffer length. Exposed for tests: feeding the finder
+    /// incrementally must let the window slide keep this near
+    /// window + cyclic, rather than growing it to the size of the whole input.
+    /// </summary>
+    internal int BufferLength => _bufferSize;
+
     public void SetInput(ReadOnlySpan<byte> data)
     {
         EnsureCapacity(data.Length);
