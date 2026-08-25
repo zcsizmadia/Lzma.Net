@@ -31,8 +31,8 @@ internal static class Crc64
     // byte v followed by k zero bytes. Table[0..256) is the classic table.
     private static readonly ulong[] Table = CreateTable();
 
-    private static uint[] Crc32Table => Crc32Table_Backing ??= CreateCrc32Table();
-    private static uint[]? Crc32Table_Backing;
+    // The match finders use the same IEEE CRC-32 byte table as a hash mixer.
+    private static uint[] Crc32Table => LZ.LzHash.CrcTable;
 
     private static ulong[] CreateTable()
     {

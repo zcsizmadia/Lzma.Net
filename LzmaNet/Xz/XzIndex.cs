@@ -244,27 +244,9 @@ internal static class XzIndex
     }
 
     private static void ReadExact(Stream stream, Span<byte> buffer)
-    {
-        int offset = 0;
-        while (offset < buffer.Length)
-        {
-            int read = stream.Read(buffer[offset..]);
-            if (read == 0)
-                throw new LzmaDataErrorException("Unexpected end of stream.");
-            offset += read;
-        }
-    }
+        => stream.ReadExact(buffer, "Unexpected end of stream.");
 
-    private static async ValueTask ReadExactAsync(
+    private static ValueTask ReadExactAsync(
         Stream stream, Memory<byte> buffer, CancellationToken cancellationToken)
-    {
-        int offset = 0;
-        while (offset < buffer.Length)
-        {
-            int read = await stream.ReadAsync(buffer[offset..], cancellationToken).ConfigureAwait(false);
-            if (read == 0)
-                throw new LzmaDataErrorException("Unexpected end of stream.");
-            offset += read;
-        }
-    }
+        => stream.ReadExactAsync(buffer, "Unexpected end of stream.", cancellationToken);
 }
