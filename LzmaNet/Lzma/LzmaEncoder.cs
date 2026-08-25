@@ -34,6 +34,22 @@ internal sealed class LzmaEncoder : IDisposable
     private int _state;
     private int _rep0, _rep1, _rep2, _rep3;
 
+    /// <summary>
+    /// The rep-distance window as a value, so emission applies the same
+    /// transitions the optimal parser predicts. See <see cref="RepDistances"/>.
+    /// </summary>
+    private RepDistances Reps
+    {
+        get => new RepDistances(_rep0, _rep1, _rep2, _rep3);
+        set
+        {
+            _rep0 = value.Rep0;
+            _rep1 = value.Rep1;
+            _rep2 = value.Rep2;
+            _rep3 = value.Rep3;
+        }
+    }
+
     // Match finder
     private readonly IMatchFinder _matchFinder;
     private readonly LzmaEncoderProperties _props;
@@ -444,30 +460,7 @@ internal sealed class LzmaEncoder : IDisposable
             }
         }
 
-        // Shuffle rep distances to match decoder behavior (do only once)
-        if (repIndex > 0)
-        {
-            int dist;
-            switch (repIndex)
-            {
-                case 1:
-                    dist = _rep1;
-                    _rep1 = _rep0;
-                    break;
-                case 2:
-                    dist = _rep2;
-                    _rep2 = _rep1;
-                    _rep1 = _rep0;
-                    break;
-                default: // 3
-                    dist = _rep3;
-                    _rep3 = _rep2;
-                    _rep2 = _rep1;
-                    _rep1 = _rep0;
-                    break;
-            }
-            _rep0 = dist;
-        }
+        Reps = Reps.AfterRepMatch(repIndex);
 
         EncodeLength(rc, _repLenProbs, len - LzmaConstants.kMatchMinLen, posState);
         _state = LzmaConstants.StateUpdateLongRep(_state);
@@ -475,10 +468,7 @@ internal sealed class LzmaEncoder : IDisposable
 
     private void EncodeMatch(RangeEncoder rc, int dist, int len, int posState)
     {
-        _rep3 = _rep2;
-        _rep2 = _rep1;
-        _rep1 = _rep0;
-        _rep0 = dist;
+        Reps = Reps.AfterMatch(dist);
 
         EncodeLength(rc, _matchLenProbs, len - LzmaConstants.kMatchMinLen, posState);
 
@@ -637,7 +627,7 @@ internal sealed class LzmaEncoder : IDisposable
 
             int bestLen = 1, bestDist = 0, bestRepIndex = -1;
             bool bestIsRep = false;
-            EvaluateRepCandidates(block, pos, maxAtPos, _rep0, _rep1, _rep2, _rep3,
+            EvaluateRepCandidates(block, pos, maxAtPos, Reps,
                 ref bestLen, ref bestDist, ref bestIsRep, ref bestRepIndex);
             for (int i = 0; i < numMatches; i++)
             {
@@ -770,10 +760,9 @@ internal sealed class LzmaEncoder : IDisposable
     }
 
     private void EvaluateRepCandidates(ReadOnlySpan<byte> block, int absPos, int maxLen,
-        int rep0, int rep1, int rep2, int rep3,
+        RepDistances reps,
         ref int bestLen, ref int bestDist, ref bool bestIsRep, ref int bestRepIndex)
     {
-        Span<int> reps = stackalloc int[4] { rep0, rep1, rep2, rep3 };
         for (int i = 0; i < 4; i++)
         {
             int len = GetRepMatchLen(block, absPos, reps[i], maxLen);
@@ -854,7 +843,7 @@ internal sealed class LzmaEncoder : IDisposable
             return;
 
         // Rep matches (all lengths)
-        Span<int> reps = stackalloc int[4] { from.Rep0, from.Rep1, from.Rep2, from.Rep3 };
+        var reps = new RepDistances(from.Rep0, from.Rep1, from.Rep2, from.Rep3);
         for (int i = 0; i < 4; i++)
         {
             int repLen = GetRepMatchLen(block, absPos, reps[i], maxLen);
@@ -863,7 +852,7 @@ internal sealed class LzmaEncoder : IDisposable
 
             uint prefix = priceRep + PriceRepIndexBits(i, state, posState);
             int newState = LzmaConstants.StateUpdateLongRep(state);
-            (int r0, int r1, int r2, int r3) = RotateReps(reps, i);
+            var afterRep = reps.AfterRepMatch(i);
 
             for (int len = LzmaConstants.kMatchMinLen; len <= repLen; len++)
             {
@@ -875,10 +864,10 @@ internal sealed class LzmaEncoder : IDisposable
                     to.PosPrev = cur;
                     to.BackPrev = i;
                     to.State = newState;
-                    to.Rep0 = r0;
-                    to.Rep1 = r1;
-                    to.Rep2 = r2;
-                    to.Rep3 = r3;
+                    to.Rep0 = afterRep.Rep0;
+                    to.Rep1 = afterRep.Rep1;
+                    to.Rep2 = afterRep.Rep2;
+                    to.Rep3 = afterRep.Rep3;
                     if (cur + len > lenEnd) lenEnd = cur + len;
                 }
             }
@@ -905,6 +894,7 @@ internal sealed class LzmaEncoder : IDisposable
             // Distance footer price is length-independent; the slot-tree price
             // depends only on lenToPosState (4 values), cached lazily.
             uint footer = PriceDistFooter(dist);
+            var afterMatch = reps.AfterMatch(dist);
             slotPrice.Fill(kInfinityPrice);
 
             for (int len = startLen; len <= candLen; len++)
@@ -922,26 +912,15 @@ internal sealed class LzmaEncoder : IDisposable
                     to.PosPrev = cur;
                     to.BackPrev = dist + 4;
                     to.State = newStateMatch;
-                    to.Rep0 = dist;
-                    to.Rep1 = reps[0];
-                    to.Rep2 = reps[1];
-                    to.Rep3 = reps[2];
+                    to.Rep0 = afterMatch.Rep0;
+                    to.Rep1 = afterMatch.Rep1;
+                    to.Rep2 = afterMatch.Rep2;
+                    to.Rep3 = afterMatch.Rep3;
                     if (cur + len > lenEnd) lenEnd = cur + len;
                 }
             }
             startLen = candLen + 1;
         }
-    }
-
-    private static (int, int, int, int) RotateReps(ReadOnlySpan<int> reps, int index)
-    {
-        return index switch
-        {
-            0 => (reps[0], reps[1], reps[2], reps[3]),
-            1 => (reps[1], reps[0], reps[2], reps[3]),
-            2 => (reps[2], reps[0], reps[1], reps[3]),
-            _ => (reps[3], reps[0], reps[1], reps[2]),
-        };
     }
 
     // ── Price helpers ────────────────────────────────────────────────
