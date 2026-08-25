@@ -254,6 +254,54 @@ public class OptimalAndFormatTests
     }
 
     [Test]
+    public async Task LzmaAlone_FailedDecode_RethrowsInsteadOfReportingEndOfStream()
+    {
+        // A caught decode failure used to leave the stream looking like a
+        // successfully decoded empty one, so a caller that retried — or any
+        // wrapper that probes a stream after an error — silently accepted
+        // corrupt input as zero bytes.
+        byte[] bad = new byte[13];
+        bad[0] = 225; // invalid properties byte (>= 9*5*5)
+        using var dec = new LzmaAloneDecompressStream(new MemoryStream(bad));
+
+        await Assert.That(() => dec.Read(new byte[8], 0, 8)).ThrowsExactly<LzmaFormatException>();
+        await Assert.That(() => dec.Read(new byte[8], 0, 8)).ThrowsExactly<LzmaFormatException>();
+        await Assert.That(() => dec.Read(new byte[8], 0, 8)).ThrowsExactly<LzmaFormatException>();
+    }
+
+    [Test]
+    public async Task LzmaAlone_FailedDecode_CopyToDoesNotProduceEmptyOutput()
+    {
+        byte[] bad = new byte[13];
+        bad[0] = 225;
+        using var dec = new LzmaAloneDecompressStream(new MemoryStream(bad));
+        using var output = new MemoryStream();
+
+        // Swallowing the first failure and copying must not yield "" — the
+        // shape a caller would mistake for a legitimately empty stream.
+        await Assert.That(() => dec.CopyTo(output)).ThrowsExactly<LzmaFormatException>();
+        await Assert.That(() => dec.CopyTo(output)).ThrowsExactly<LzmaFormatException>();
+        await Assert.That(output.Length).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task LzmaAlone_TruncatedPayload_FailureIsSticky()
+    {
+        // Valid header claiming 64 KB, but the payload is cut short.
+        byte[] original = MakeTextLikeData(64 * 1024);
+        using var ms = new MemoryStream();
+        using (var enc = new LzmaAloneCompressStream(ms, preset: 1, leaveOpen: true))
+            enc.Write(original);
+
+        byte[] truncated = ms.ToArray().AsSpan(0, 13 + 32).ToArray();
+        using var dec = new LzmaAloneDecompressStream(new MemoryStream(truncated));
+
+        var first = await Assert.That(() => dec.Read(new byte[64], 0, 64)).Throws<LzmaException>();
+        var second = await Assert.That(() => dec.Read(new byte[64], 0, 64)).Throws<LzmaException>();
+        await Assert.That(second!.GetType()).IsEqualTo(first!.GetType());
+    }
+
+    [Test]
     public async Task LzmaAlone_MaxOutputSize_Enforced()
     {
         byte[] original = new byte[1024 * 1024];
