@@ -369,12 +369,10 @@ internal sealed class LzmaEncoder : IDisposable
         if (dist < 0 || pos - dist - 1 < 0)
             return 0;
 
-        // maxLen is already capped at the chunk boundary by the caller.
+        // maxLen is already capped at the chunk boundary by the caller, so the
+        // vectorized compare stays inside the block.
         int srcPos = pos - dist - 1;
-        int len = 0;
-        while (len < maxLen && block[srcPos + len] == block[pos + len])
-            len++;
-        return len;
+        return LZ.MatchLength.Common(block, srcPos, pos, maxLen);
     }
 
     private void EncodeLiteral(RangeEncoder rc, ReadOnlySpan<byte> input, byte curByte, byte prevByte, int pos)
@@ -564,6 +562,18 @@ internal sealed class LzmaEncoder : IDisposable
     private int[]? _optOpsLen;     // backtracked ops
     private int[]? _optOpsBack;
 
+    // Length prices, keyed by (coder, posState, length). Nothing is emitted
+    // between the RelaxFrom calls of one dynamic-programming window, so the
+    // length-coder probabilities — and therefore these prices — are fixed for
+    // its duration. Each price is computed once per window instead of once per
+    // edge, which is where the parser spent most of its time.
+    private const int kLenPriceCoders = 2;   // 0 = match lengths, 1 = rep lengths
+    private const int kLenPriceMatch = 0;
+    private const int kLenPriceRep = 1;
+    private uint[]? _lenPrice;
+    private uint[]? _lenPriceStamp;
+    private uint _priceGeneration = 1;       // 0 is the "never filled" stamp
+
     private void EnsureOptBuffers()
     {
         if (_opt != null)
@@ -574,6 +584,41 @@ internal sealed class LzmaEncoder : IDisposable
         _optMatchCount = new int[kNumOpts];
         _optOpsLen = new int[kNumOpts];
         _optOpsBack = new int[kNumOpts];
+
+        int lenPriceSize = kLenPriceCoders * LzmaConstants.kNumPosStatesMax * LzmaConstants.kNumLenSymbols;
+        _lenPrice = new uint[lenPriceSize];
+        _lenPriceStamp = new uint[lenPriceSize];
+    }
+
+    /// <summary>
+    /// Starts a new pricing window, invalidating every cached length price
+    /// without touching the table.
+    /// </summary>
+    private void BeginPricingWindow()
+    {
+        if (++_priceGeneration == 0)
+        {
+            // Wrapped: stamps would compare equal to the new generation.
+            Array.Clear(_lenPriceStamp!);
+            _priceGeneration = 1;
+        }
+    }
+
+    /// <summary>
+    /// Length price for the current window, computed on first use.
+    /// </summary>
+    private uint PriceLenCached(ushort[] lenProbs, int coder, int posState, int len)
+    {
+        int index = ((coder << LzmaConstants.kNumPosStatesBitsMax) + posState)
+                        * LzmaConstants.kNumLenSymbols
+                    + (len - LzmaConstants.kMatchMinLen);
+
+        if (_lenPriceStamp![index] != _priceGeneration)
+        {
+            _lenPrice![index] = PriceLen(lenProbs, posState, len);
+            _lenPriceStamp[index] = _priceGeneration;
+        }
+        return _lenPrice![index];
     }
 
     private int GatherMatches(int cur)
@@ -657,6 +702,8 @@ internal sealed class LzmaEncoder : IDisposable
                 _matchFinder.Skip(bestLen);
                 continue;
             }
+
+            BeginPricingWindow();
 
             // ---- Dynamic program over the window ----
             int cap = Math.Min(kNumOpts - 1, chunkEnd - pos);
@@ -856,7 +903,7 @@ internal sealed class LzmaEncoder : IDisposable
 
             for (int len = LzmaConstants.kMatchMinLen; len <= repLen; len++)
             {
-                uint p = prefix + PriceLen(_repLenProbs, posState, len);
+                uint p = prefix + PriceLenCached(_repLenProbs, kLenPriceRep, posState, len);
                 ref OptNode to = ref opt[cur + len];
                 if (p < to.Price)
                 {
@@ -903,7 +950,7 @@ internal sealed class LzmaEncoder : IDisposable
                 if (slotPrice[lps] == kInfinityPrice)
                     slotPrice[lps] = PriceDistSlot(lps, dist);
 
-                uint p = priceMatch + PriceLen(_matchLenProbs, posState, len)
+                uint p = priceMatch + PriceLenCached(_matchLenProbs, kLenPriceMatch, posState, len)
                        + slotPrice[lps] + footer;
                 ref OptNode to = ref opt[cur + len];
                 if (p < to.Price)

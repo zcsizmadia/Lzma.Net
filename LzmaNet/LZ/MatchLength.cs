@@ -23,10 +23,15 @@ internal static class MatchLength
     /// bytes: the vector and 64-bit paths read in blocks and rely on the finder's
     /// buffer being sized with the match-length slack that provides.
     /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int Common(byte[] buffer, int a, int b, int limit)
+        => Common(new ReadOnlySpan<byte>(buffer), a, b, limit);
+
+    /// <inheritdoc cref="Common(byte[], int, int, int)"/>
+    public static int Common(ReadOnlySpan<byte> block, int a, int b, int limit)
     {
         int len = 0;
-        ref byte bufRef = ref MemoryMarshal.GetArrayDataReference(buffer);
+        ref byte bufRef = ref MemoryMarshal.GetReference(block);
 
         if (Vector256.IsHardwareAccelerated)
         {
@@ -65,7 +70,7 @@ internal static class MatchLength
             }
         }
 
-        while (len < limit && buffer[a + len] == buffer[b + len])
+        while (len < limit && block[a + len] == block[b + len])
             len++;
         return len;
     }
