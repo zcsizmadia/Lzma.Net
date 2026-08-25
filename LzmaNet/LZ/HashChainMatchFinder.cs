@@ -14,117 +14,19 @@ namespace LzmaNet.LZ;
 /// mask instead of an integer modulo in the chain-walk inner loop, and match
 /// lengths are computed 8 bytes at a time.
 /// </summary>
-internal sealed class HashChainMatchFinder : IMatchFinder
+internal sealed class HashChainMatchFinder : SlidingWindowMatchFinder
 {
-    private readonly int _windowSize;
-    private readonly int _cyclicBufferSize;
-    private readonly int _cyclicMask;
-    private readonly int _hashMask;
-    private readonly int _cutValue;
-    private readonly int _matchMaxLen;
-
-    private byte[] _buffer;
-    private int[] _hash;
     private int[] _chain;
-    private int _bufferSize;
-    private int _pos;
-    private int _streamPos;
-    private bool _disposed;
-    private bool _hashUpdatedAtPos; // prevents double hash update when FindMatches + MovePos at same pos
 
     public HashChainMatchFinder(int dictSize, int matchMaxLen, int cutValue)
+        : base(dictSize, matchMaxLen, cutValue)
     {
-        // The true match window (max look-back distance). Distances must stay
-        // below this so they remain valid for the dictionary size declared in
-        // the XZ block header.
-        _windowSize = Math.Max(dictSize, 2);
-
-        // Chain slot count rounded up to a power of two so slots can be
-        // computed with a mask instead of an integer modulo.
-        _cyclicBufferSize = (int)BitOperations.RoundUpToPowerOf2((uint)_windowSize);
-        _cyclicMask = _cyclicBufferSize - 1;
-        _matchMaxLen = matchMaxLen;
-        _cutValue = cutValue;
-
-        int hashBits = LzHash.HashBits(dictSize);
-        _hashMask = (1 << hashBits) - 1;
-
-        int hashSize = LzHash.TableSize(_hashMask);
-        _hash = ArrayPool<int>.Shared.Rent(hashSize);
-        Array.Fill(_hash, -1, 0, hashSize);
-
         _chain = ArrayPool<int>.Shared.Rent(_cyclicBufferSize);
         Array.Fill(_chain, -1, 0, _cyclicBufferSize);
-
-        // Sized so the buffer only slides after at least one full cyclic-size
-        // span has accumulated behind the window; slides then move by a
-        // multiple of the cyclic size, which keeps chain slot mapping valid
-        // (slot(p - k*cyclic) == slot(p)).
-        _bufferSize = _windowSize + _cyclicBufferSize + (1 << 16) + matchMaxLen + 4096;
-        _buffer = ArrayPool<byte>.Shared.Rent(_bufferSize);
-        _pos = 0;
-        _streamPos = 0;
     }
 
-    /// <summary>
-    /// Current search-buffer length. Exposed for tests: feeding the finder
-    /// incrementally must let the window slide keep this near
-    /// window + cyclic, rather than growing it to the size of the whole input.
-    /// </summary>
-    internal int BufferLength => _bufferSize;
-
-    public void SetInput(ReadOnlySpan<byte> data)
+    protected override void RebasePositions(int delta)
     {
-        EnsureCapacity(data.Length);
-        data.CopyTo(_buffer.AsSpan(_streamPos));
-        _streamPos += data.Length;
-    }
-
-    private void EnsureCapacity(int incoming)
-    {
-        if (_streamPos <= _bufferSize - incoming - _matchMaxLen)
-            return;
-
-        // Slide the window down by a multiple of the cyclic size so existing
-        // hash/chain entries stay slot-consistent after rebasing.
-        int keepFrom = _pos - _windowSize;
-        if (keepFrom > 0)
-        {
-            int delta = keepFrom & ~_cyclicMask; // round down to cyclic multiple
-            if (delta > 0)
-            {
-                Buffer.BlockCopy(_buffer, delta, _buffer, 0, _streamPos - delta);
-                _pos -= delta;
-                _streamPos -= delta;
-                RebaseTables(delta);
-            }
-        }
-
-        if (_streamPos > _bufferSize - incoming - _matchMaxLen)
-        {
-            // Input larger than the buffer (direct one-shot encodes) — grow.
-            int newSize = Math.Max(_streamPos + incoming + _matchMaxLen + 4096, _bufferSize * 2);
-            byte[] bigger = ArrayPool<byte>.Shared.Rent(newSize);
-            Buffer.BlockCopy(_buffer, 0, bigger, 0, _streamPos);
-            ArrayPool<byte>.Shared.Return(_buffer);
-            _buffer = bigger;
-            _bufferSize = newSize;
-        }
-    }
-
-    /// <summary>
-    /// Shifts all stored positions down by <paramref name="delta"/> after a buffer
-    /// slide. <paramref name="delta"/> is a multiple of the cyclic size, so chain
-    /// slot indices are unaffected.
-    /// </summary>
-    private void RebaseTables(int delta)
-    {
-        int hashSize = LzHash.TableSize(_hashMask);
-        for (int i = 0; i < hashSize; i++)
-        {
-            int v = _hash[i];
-            if (v >= 0) _hash[i] = v >= delta ? v - delta : -1;
-        }
         for (int i = 0; i < _cyclicBufferSize; i++)
         {
             int v = _chain[i];
@@ -132,30 +34,20 @@ internal sealed class HashChainMatchFinder : IMatchFinder
         }
     }
 
-    /// <summary>
-    /// Resets position counters and clears hash/chain tables.
-    /// Call this when starting a new independent encoding unit (e.g., LZMA2 chunk with state reset).
-    /// </summary>
-    public void Reset()
+    protected override void ClearPositions()
+        => Array.Fill(_chain, -1, 0, _cyclicBufferSize);
+
+    protected override void ReleasePositions()
     {
-        _pos = 0;
-        _streamPos = 0;
-        _hashUpdatedAtPos = false;
-        int hashSize = LzHash.TableSize(_hashMask);
-        Array.Fill(_hash, -1, 0, hashSize);
-        Array.Fill(_chain, -1, 0, _cyclicBufferSize);
+        ArrayPool<int>.Shared.Return(_chain);
+        _chain = null!;
     }
-
-    public int Available => _streamPos - _pos;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public byte GetByte(int offset) => _buffer[_pos + offset];
 
     /// <summary>
     /// Finds matches at the current position. Updates hash tables and chain.
     /// Does NOT advance position — call MovePos or Skip afterward.
     /// </summary>
-    public int FindMatches(Span<int> distances, Span<int> lengths, int maxMatches)
+    public override int FindMatches(Span<int> distances, Span<int> lengths, int maxMatches)
     {
         int avail = Available;
         if (avail < 2) return 0;
@@ -253,22 +145,12 @@ internal sealed class HashChainMatchFinder : IMatchFinder
     /// <summary>
     /// Advances position by one byte, updating hash tables and chain if not already done by FindMatches.
     /// </summary>
-    public void MovePos()
+    public override void MovePos()
     {
         if (!_hashUpdatedAtPos && Available >= 4)
             UpdateHashAtCurrentPos();
         _hashUpdatedAtPos = false;
         _pos++;
-    }
-
-    /// <summary>
-    /// Advances position by count bytes. First call skips hash update if FindMatches was called.
-    /// Subsequent positions get full hash updates.
-    /// </summary>
-    public void Skip(int count)
-    {
-        for (int i = 0; i < count; i++)
-            MovePos();
     }
 
     private void UpdateHashAtCurrentPos()
@@ -283,19 +165,4 @@ internal sealed class HashChainMatchFinder : IMatchFinder
         _chain[_pos & _cyclicMask] = oldHead;
     }
 
-    public int Position => _pos;
-
-    public void Dispose()
-    {
-        if (!_disposed)
-        {
-            ArrayPool<int>.Shared.Return(_hash);
-            ArrayPool<int>.Shared.Return(_chain);
-            ArrayPool<byte>.Shared.Return(_buffer);
-            _hash = null!;
-            _chain = null!;
-            _buffer = null!;
-            _disposed = true;
-        }
-    }
 }

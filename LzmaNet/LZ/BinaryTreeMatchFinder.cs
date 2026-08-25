@@ -15,33 +15,15 @@ namespace LzmaNet.LZ;
 /// than the hash chain — the nearest distance for every length, with strictly
 /// increasing lengths — at higher CPU and memory cost. Used by the optimal parser.
 /// </summary>
-internal sealed class BinaryTreeMatchFinder : IMatchFinder
+internal sealed class BinaryTreeMatchFinder : SlidingWindowMatchFinder
 {
-    private readonly int _windowSize;
-    private readonly int _cyclicBufferSize;
-    private readonly int _cyclicMask;
     private readonly int _maxMatchDelta;
-    private readonly int _hashMask;
-    private readonly int _cutValue;
-    private readonly int _matchMaxLen;
 
-    private byte[] _buffer;
-    private int[] _hash;
     private int[] _son; // two entries per slot: [2*slot] = left child, [2*slot+1] = right child
-    private int _bufferSize;
-    private int _pos;
-    private int _streamPos;
-    private bool _disposed;
-    private bool _hashUpdatedAtPos;
 
     public BinaryTreeMatchFinder(int dictSize, int matchMaxLen, int cutValue)
+        : base(dictSize, matchMaxLen, cutValue)
     {
-        _windowSize = Math.Max(dictSize, 2);
-        _cyclicBufferSize = (int)BitOperations.RoundUpToPowerOf2((uint)_windowSize);
-        _cyclicMask = _cyclicBufferSize - 1;
-        _matchMaxLen = matchMaxLen;
-        _cutValue = cutValue;
-
         // Tree nodes are addressed by cyclic slot, so a candidate at delta ==
         // _cyclicBufferSize maps onto the son[] slot pair of the position being
         // inserted: adopting its subtrees would read the new node's own
@@ -53,69 +35,12 @@ internal sealed class BinaryTreeMatchFinder : IMatchFinder
         // which binds first when the window is not a power of two.
         _maxMatchDelta = Math.Min(_windowSize, _cyclicBufferSize - 1);
 
-        int hashBits = LzHash.HashBits(dictSize);
-        _hashMask = (1 << hashBits) - 1;
-
-        int hashSize = LzHash.TableSize(_hashMask);
-        _hash = ArrayPool<int>.Shared.Rent(hashSize);
-        Array.Fill(_hash, -1, 0, hashSize);
-
         _son = ArrayPool<int>.Shared.Rent(2 * _cyclicBufferSize);
         Array.Fill(_son, -1, 0, 2 * _cyclicBufferSize);
-
-        _bufferSize = _windowSize + _cyclicBufferSize + (1 << 16) + matchMaxLen + 4096;
-        _buffer = ArrayPool<byte>.Shared.Rent(_bufferSize);
-        _pos = 0;
-        _streamPos = 0;
     }
 
-    public int Available => _streamPos - _pos;
-
-    public void SetInput(ReadOnlySpan<byte> data)
+    protected override void RebasePositions(int delta)
     {
-        EnsureCapacity(data.Length);
-        data.CopyTo(_buffer.AsSpan(_streamPos));
-        _streamPos += data.Length;
-    }
-
-    private void EnsureCapacity(int incoming)
-    {
-        if (_streamPos <= _bufferSize - incoming - _matchMaxLen)
-            return;
-
-        // Slide by a multiple of the cyclic size so son/hash slots stay valid.
-        int keepFrom = _pos - _windowSize;
-        if (keepFrom > 0)
-        {
-            int delta = keepFrom & ~_cyclicMask;
-            if (delta > 0)
-            {
-                Buffer.BlockCopy(_buffer, delta, _buffer, 0, _streamPos - delta);
-                _pos -= delta;
-                _streamPos -= delta;
-                RebaseTables(delta);
-            }
-        }
-
-        if (_streamPos > _bufferSize - incoming - _matchMaxLen)
-        {
-            int newSize = Math.Max(_streamPos + incoming + _matchMaxLen + 4096, _bufferSize * 2);
-            byte[] bigger = ArrayPool<byte>.Shared.Rent(newSize);
-            Buffer.BlockCopy(_buffer, 0, bigger, 0, _streamPos);
-            ArrayPool<byte>.Shared.Return(_buffer);
-            _buffer = bigger;
-            _bufferSize = newSize;
-        }
-    }
-
-    private void RebaseTables(int delta)
-    {
-        int hashSize = LzHash.TableSize(_hashMask);
-        for (int i = 0; i < hashSize; i++)
-        {
-            int v = _hash[i];
-            if (v >= 0) _hash[i] = v >= delta ? v - delta : -1;
-        }
         int sonSize = 2 * _cyclicBufferSize;
         for (int i = 0; i < sonSize; i++)
         {
@@ -124,17 +49,16 @@ internal sealed class BinaryTreeMatchFinder : IMatchFinder
         }
     }
 
-    public void Reset()
+    protected override void ClearPositions()
+        => Array.Fill(_son, -1, 0, 2 * _cyclicBufferSize);
+
+    protected override void ReleasePositions()
     {
-        _pos = 0;
-        _streamPos = 0;
-        _hashUpdatedAtPos = false;
-        int hashSize = LzHash.TableSize(_hashMask);
-        Array.Fill(_hash, -1, 0, hashSize);
-        Array.Fill(_son, -1, 0, 2 * _cyclicBufferSize);
+        ArrayPool<int>.Shared.Return(_son);
+        _son = null!;
     }
 
-    public int FindMatches(Span<int> distances, Span<int> lengths, int maxMatches)
+    public override int FindMatches(Span<int> distances, Span<int> lengths, int maxMatches)
     {
         int avail = Available;
         if (avail < 4)
@@ -277,6 +201,14 @@ internal sealed class BinaryTreeMatchFinder : IMatchFinder
     /// Inserts the current position into the tree without collecting matches
     /// (LZMA reference SkipMatchesSpec).
     /// </summary>
+    /// <remarks>
+    /// This is <see cref="TreeWalk"/> with the match-collection block removed,
+    /// and it stays a separate method on purpose: it runs for every skipped
+    /// position — the bulk of positions once a match is taken — and folding the
+    /// two would put a collect-or-not branch inside the tree descent, the
+    /// hottest loop in BT4 encoding. The two share their termination condition
+    /// and re-link steps, so a change to one needs the same change here.
+    /// </remarks>
     private void TreeInsert(int curMatch, int cur, int lenLimit)
     {
         int[] son = _son;
@@ -327,18 +259,12 @@ internal sealed class BinaryTreeMatchFinder : IMatchFinder
         }
     }
 
-    public void MovePos()
+    public override void MovePos()
     {
         if (!_hashUpdatedAtPos && Available >= 4)
             InsertCurrentPos();
         _hashUpdatedAtPos = false;
         _pos++;
-    }
-
-    public void Skip(int count)
-    {
-        for (int i = 0; i < count; i++)
-            MovePos();
     }
 
     private void InsertCurrentPos()
@@ -355,19 +281,5 @@ internal sealed class BinaryTreeMatchFinder : IMatchFinder
         _hash[h4] = _pos;
 
         TreeInsert(curMatch, cur, lenLimit);
-    }
-
-    public void Dispose()
-    {
-        if (!_disposed)
-        {
-            ArrayPool<int>.Shared.Return(_hash);
-            ArrayPool<int>.Shared.Return(_son);
-            ArrayPool<byte>.Shared.Return(_buffer);
-            _hash = null!;
-            _son = null!;
-            _buffer = null!;
-            _disposed = true;
-        }
     }
 }
