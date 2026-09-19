@@ -17,15 +17,18 @@ internal static class XzIndex
     /// </summary>
     /// <param name="stream">Input stream positioned at the start of the index (after the 0x00 indicator).</param>
     /// <param name="records">Receives the list of (unpaddedSize, uncompressedSize) records.</param>
+    /// <param name="maxIndexSize">Upper bound on the encoded size of this Index, in bytes.
+    /// Callers that know the footer's Backward Size pass it so that a bogus Number of
+    /// Records is rejected before any record is read.</param>
     /// <returns>Size of the index in bytes (including the indicator byte).</returns>
-    public static long ReadIndex(Stream stream, out List<(long unpaddedSize, long uncompressedSize)> records)
+    public static long ReadIndex(Stream stream, out List<(long unpaddedSize, long uncompressedSize)> records,
+        long maxIndexSize = XzConstants.BackwardSizeMax)
     {
         using var indexData = new MemoryStream();
         indexData.WriteByte(0x00);
 
         ulong numRecords = ReadMultibyteIntAndCopy(stream, indexData);
-        if (numRecords > int.MaxValue)
-            throw new LzmaDataErrorException("Too many records in XZ index.");
+        CheckRecordCount(numRecords, maxIndexSize);
 
         records = new List<(long, long)>((int)Math.Min(numRecords, 1024));
         for (ulong i = 0; i < numRecords; i++)
@@ -62,15 +65,15 @@ internal static class XzIndex
     /// Asynchronously reads and validates the XZ index from the stream.
     /// </summary>
     public static async Task<(long Size, List<(long unpaddedSize, long uncompressedSize)> Records)>
-        ReadIndexAsync(Stream stream, CancellationToken cancellationToken = default)
+        ReadIndexAsync(Stream stream, CancellationToken cancellationToken = default,
+            long maxIndexSize = XzConstants.BackwardSizeMax)
     {
         using var indexData = new MemoryStream();
         indexData.WriteByte(0x00);
 
         ulong numRecords = await ReadMultibyteIntAndCopyAsync(stream, indexData, cancellationToken)
             .ConfigureAwait(false);
-        if (numRecords > int.MaxValue)
-            throw new LzmaDataErrorException("Too many records in XZ index.");
+        CheckRecordCount(numRecords, maxIndexSize);
 
         var records = new List<(long, long)>((int)Math.Min(numRecords, 1024));
         for (ulong i = 0; i < numRecords; i++)
@@ -187,6 +190,21 @@ internal static class XzIndex
         await output.WriteAsync(crc, cancellationToken).ConfigureAwait(false);
 
         return indexLength + crc.Length;
+    }
+
+    /// <summary>
+    /// Rejects a Number of Records value that cannot fit in an Index of at most
+    /// <paramref name="maxIndexSize"/> bytes. Every Record needs at least two bytes,
+    /// so a larger count means the input is not a valid .xz file; liblzma 5.8.4 added
+    /// the same early rejection to its Index decoder. The count is additionally capped
+    /// at <see cref="int.MaxValue"/> because the records are kept in a <see cref="List{T}"/>.
+    /// </summary>
+    private static void CheckRecordCount(ulong numRecords, long maxIndexSize)
+    {
+        ulong maxRecords = (ulong)Math.Min(maxIndexSize / 2, int.MaxValue);
+        if (numRecords > maxRecords)
+            throw new LzmaDataErrorException(
+                $"Too many records in XZ index: {numRecords} exceeds the {maxRecords} that fit.");
     }
 
     private static ulong ReadMultibyteIntAndCopy(Stream stream, MemoryStream copy)

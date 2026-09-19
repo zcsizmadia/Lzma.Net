@@ -205,6 +205,20 @@ internal ref struct RangeDecoder
     public readonly bool IsFinished => _code == 0;
 
     /// <summary>
+    /// Ends a chunk whose uncompressed size is known: performs the final
+    /// normalization (which may consume one more input byte) and verifies that the
+    /// range coder reached the finished state. Mirrors liblzma's end-of-chunk handling
+    /// in <c>lzma_decoder.c</c> (SEQ_NORMALIZE followed by <c>rc_is_finished</c>), which
+    /// LZMA2 relies on to prove a chunk consumed exactly its declared compressed size.
+    /// </summary>
+    public void FinishChunk()
+    {
+        Normalize();
+        if (_code != 0)
+            throw new LzmaDataErrorException("LZMA chunk did not end in a valid range coder state.");
+    }
+
+    /// <summary>
     /// Initializes an array of probability values to their default (0.5 probability).
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

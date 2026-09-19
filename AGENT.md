@@ -4,7 +4,7 @@ Instructions for AI coding agents working on this codebase.
 
 ## Project Overview
 
-Pure managed C# implementation of the XZ/LZMA2/LZMA compression format, ported from [XZ Utils 5.8.3](https://github.com/tukaani-project/xz). No native binaries, no P/Invoke.
+Pure managed C# implementation of the XZ/LZMA2/LZMA compression format, ported from [XZ Utils 5.8.4](https://github.com/tukaani-project/xz). No native binaries, no P/Invoke.
 
 ## Build & Test
 
