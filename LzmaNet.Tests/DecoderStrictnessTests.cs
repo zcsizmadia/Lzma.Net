@@ -217,8 +217,12 @@ public class LzmaChunkSizeInteropTests
         var (_, corruptExit) = await RunXzAsync("--test --stdout", corrupt);
         await Assert.That(corruptExit).IsNotEqualTo(0);
 
+        // Pin the reason, not just the rejection: the file is well-formed apart from
+        // the chunk's own size claim, so any other error would mean this stopped
+        // covering the chunk-size rule.
         await Assert.That(() => XzCompressor.Decompress(corrupt))
-            .ThrowsExactly<LzmaDataErrorException>();
+            .ThrowsExactly<LzmaDataErrorException>()
+            .WithMessageContaining("LZMA2 chunk compressed size");
     }
 
     /// <summary>
@@ -248,20 +252,21 @@ public class LzmaChunkSizeInteropTests
         BinaryPrimitives.WriteUInt16BigEndian(
             corrupt.AsSpan(compSizeOffset, 2), (ushort)(storedCompSize + Surplus));
 
-        // The Block grew by four bytes, so the Block header's Compressed Size says so
-        // too. Its CRC32 covers everything in the header before the CRC itself.
+        // The Block grew by four bytes. Whether the Block header states the Compressed
+        // Size is up to the xz build that produced the file, so patch that field only
+        // when it is there; its CRC32 covers the header up to the CRC itself.
         int blockHeaderPos = XzConstants.StreamHeaderSize;
-        if ((corrupt[blockHeaderPos + 1] & 0x40) == 0)
-            throw new InvalidOperationException("Expected a Compressed Size in the Block header.");
-
-        int blockCompPos = blockHeaderPos + 2;
-        int cursor = blockCompPos;
-        ulong blockCompSize = ReadVli(corrupt, ref cursor);
-        if (VliLength(blockCompSize + Surplus) != cursor - blockCompPos)
-            throw new InvalidOperationException("Compressed Size no longer fits its original encoding.");
-        WriteVli(corrupt.AsSpan(blockCompPos), blockCompSize + Surplus);
-        Crc32.WriteLE(corrupt.AsSpan(blockHeaderPos, blockHeaderSize - 4),
-                      corrupt.AsSpan(blockHeaderPos + blockHeaderSize - 4, 4));
+        if ((corrupt[blockHeaderPos + 1] & 0x40) != 0)
+        {
+            int blockCompPos = blockHeaderPos + 2;
+            int cursor = blockCompPos;
+            ulong blockCompSize = ReadVli(corrupt, ref cursor);
+            if (VliLength(blockCompSize + Surplus) != cursor - blockCompPos)
+                throw new InvalidOperationException("Compressed Size no longer fits its original encoding.");
+            WriteVli(corrupt.AsSpan(blockCompPos), blockCompSize + Surplus);
+            Crc32.WriteLE(corrupt.AsSpan(blockHeaderPos, blockHeaderSize - 4),
+                          corrupt.AsSpan(blockHeaderPos + blockHeaderSize - 4, 4));
+        }
 
         // The Index record's Unpadded Size covers the same four bytes.
         int footerPos = corrupt.Length - XzConstants.StreamFooterSize;
