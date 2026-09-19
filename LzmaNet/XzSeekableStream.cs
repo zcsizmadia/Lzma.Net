@@ -237,7 +237,7 @@ public sealed class XzSeekableStream : Stream
             _baseStream.Position = indexPos;
             if (_baseStream.ReadByte() != 0x00)
                 throw new LzmaDataErrorException("Missing XZ index indicator.");
-            long actualIndexSize = XzIndex.ReadIndex(_baseStream, out var records);
+            long actualIndexSize = XzIndex.ReadIndex(_baseStream, out var records, indexSize);
             if (actualIndexSize != indexSize)
                 throw new LzmaDataErrorException(
                     $"XZ footer backward size ({indexSize}) does not match index size ({actualIndexSize}).");
