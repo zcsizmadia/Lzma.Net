@@ -19,6 +19,12 @@ internal static class XzConstants
     /// <summary>Stream footer size: 4 CRC32 + 4 backward size + 2 stream flags + 2 magic = 12 bytes.</summary>
     public const int StreamFooterSize = 12;
 
+    /// <summary>
+    /// Largest Backward Size an XZ stream footer can encode: (2^32) * 4 bytes.
+    /// Used as the upper bound on the Index size when the real one is unknown.
+    /// </summary>
+    public const long BackwardSizeMax = 1L << 34;
+
     /// <summary>XZ filter ID for LZMA2.</summary>
     public const ulong FilterIdLzma2 = 0x21;
 

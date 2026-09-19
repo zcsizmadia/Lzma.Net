@@ -233,7 +233,7 @@ LzmaAloneCompressStream / LzmaAloneDecompressStream   (legacy .lzma format)
 
 ## Acknowledgments
 
-This implementation is based on the algorithms and file format from [XZ Utils 5.8.3](https://github.com/tukaani-project/xz), originally created by **Lasse Collin** and maintained by the [Tukaani Project](https://tukaani.org/xz/). The BCJ filter implementations are ported from the liblzma C source.
+This implementation is based on the algorithms and file format from [XZ Utils 5.8.4](https://github.com/tukaani-project/xz), originally created by **Lasse Collin** and maintained by the [Tukaani Project](https://tukaani.org/xz/). The BCJ filter implementations are ported from the liblzma C source.
 
 Special thanks to:
 

@@ -152,6 +152,16 @@ internal sealed class Lzma2Decoder : IDisposable
             rc.Init(span.Slice(inPos, compSize), 0);
 
             _lzmaDecoder.DecodeChunk(ref rc, output, ref outPos, dictStart, uncompSize);
+
+            // The chunk must be consumed exactly. liblzma finishes the range coder at
+            // the end of every LZMA2 chunk and then requires its remaining compressed
+            // size to be zero; without this a header that overstates the compressed
+            // size is accepted and the surplus bytes are silently skipped.
+            rc.FinishChunk();
+            if (rc.Position != compSize)
+                throw new LzmaDataErrorException(
+                    "LZMA2 chunk compressed size does not match the coded data.");
+
             inPos += compSize;
         }
 
