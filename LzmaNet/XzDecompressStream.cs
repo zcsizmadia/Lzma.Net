@@ -21,6 +21,10 @@ namespace LzmaNet;
 /// </code>
 /// </remarks>
 public sealed class XzDecompressStream : Stream
+#if NETSTANDARD2_0
+    // netstandard2.0's Stream does not implement IAsyncDisposable.
+    , IAsyncDisposable
+#endif
 {
     private readonly Stream _baseStream;
     private readonly bool _leaveOpen;
@@ -138,14 +142,23 @@ public sealed class XzDecompressStream : Stream
     }
 
     /// <inheritdoc/>
+#if !NETSTANDARD2_0
     public override ValueTask<int> ReadAsync(Memory<byte> buffer,
         CancellationToken cancellationToken = default)
+#else
+    public ValueTask<int> ReadAsync(Memory<byte> buffer,
+        CancellationToken cancellationToken = default)
+#endif
     {
         return ReadAsyncCore(buffer, cancellationToken);
     }
 
     /// <inheritdoc/>
+#if !NETSTANDARD2_0
     public override int Read(Span<byte> buffer)
+#else
+    public int Read(Span<byte> buffer)
+#endif
     {
         Portable.ThrowIfDisposed(_disposed, this);
 
@@ -690,6 +703,20 @@ public sealed class XzDecompressStream : Stream
 
     /// <inheritdoc/>
     public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+#if NETSTANDARD2_0
+    /// <summary>
+    /// Releases the stream. Decompression has no asynchronous teardown — the
+    /// work is all in <see cref="Dispose(bool)"/> — so this exists only because
+    /// netstandard2.0's <see cref="Stream"/> supplies no <c>DisposeAsync</c> for
+    /// <c>await using</c> to find.
+    /// </summary>
+    public ValueTask DisposeAsync()
+    {
+        Dispose();
+        return default;
+    }
+#endif
 
     /// <inheritdoc/>
     protected override void Dispose(bool disposing)

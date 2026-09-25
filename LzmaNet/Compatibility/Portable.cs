@@ -83,6 +83,60 @@ internal static class Portable
     }
 
     /// <summary>
+    /// Assigns <paramref name="value"/> to <paramref name="count"/> elements of
+    /// <paramref name="array"/> starting at <paramref name="startIndex"/>.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void Fill<T>(T[] array, T value, int startIndex, int count)
+    {
+#if NETSTANDARD2_0
+        // Span.Fill is vectorized by System.Memory, so this stays close to the
+        // framework method it stands in for.
+        array.AsSpan(startIndex, count).Fill(value);
+#else
+        Array.Fill(array, value, startIndex, count);
+#endif
+    }
+
+    /// <summary>
+    /// Assigns <paramref name="value"/> to every element of <paramref name="array"/>.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void Fill<T>(T[] array, T value)
+    {
+#if NETSTANDARD2_0
+        array.AsSpan().Fill(value);
+#else
+        Array.Fill(array, value);
+#endif
+    }
+
+    /// <summary>
+    /// Clamps <paramref name="value"/> to the inclusive range
+    /// <paramref name="min"/>..<paramref name="max"/>.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int Clamp(int value, int min, int max)
+    {
+#if NETSTANDARD2_0
+        return value < min ? min : value > max ? max : value;
+#else
+        return Math.Clamp(value, min, max);
+#endif
+    }
+
+    /// <inheritdoc cref="Clamp(int, int, int)"/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static long Clamp(long value, long min, long max)
+    {
+#if NETSTANDARD2_0
+        return value < min ? min : value > max ? max : value;
+#else
+        return Math.Clamp(value, min, max);
+#endif
+    }
+
+    /// <summary>
     /// Writes the SHA-256 digest of <paramref name="source"/> into
     /// <paramref name="destination"/>, which must be 32 bytes.
     /// </summary>
@@ -91,10 +145,15 @@ internal static class Portable
     {
 #if NET8_0_OR_GREATER
         SHA256.HashData(source, destination);
-#else
+#elif NETSTANDARD2_1_OR_GREATER
         using var sha = SHA256.Create();
         if (!sha.TryComputeHash(source, destination, out int written) || written != 32)
             throw new InvalidOperationException("SHA-256 digest could not be computed.");
+#else
+        // netstandard2.0's HashAlgorithm is byte[]-only.
+        using var sha = SHA256.Create();
+        byte[] hash = sha.ComputeHash(source.ToArray());
+        hash.AsSpan().CopyTo(destination);
 #endif
     }
 }

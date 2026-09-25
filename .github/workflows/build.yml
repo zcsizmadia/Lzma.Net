@@ -105,6 +105,26 @@ jobs:
         env:
           DOTNET_EnableHWIntrinsic: '0'
 
+  test-netfx:
+    runs-on: windows-latest
+    name: test (.NET Framework)
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            10.0.x
+
+      # The netstandard2.0 asset is the one .NET Framework consumers get, and
+      # this is the only job that runs it on that runtime — the portable test
+      # projects execute it on .NET 10, which is a different BCL. Windows-only,
+      # and outside the solution, so it needs its own invocation.
+      - name: Test the netstandard2.0 asset on .NET Framework
+        run: dotnet test LzmaNet.Tests.NetFx/LzmaNet.Tests.NetFx.csproj -c Release
+
   pack:
     needs: build
     runs-on: ubuntu-latest

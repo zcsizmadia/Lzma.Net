@@ -4,6 +4,8 @@ using System.Buffers.Binary;
 
 using LzmaNet.Check;
 
+using LzmaNet.Compatibility;
+
 namespace LzmaNet.Xz;
 
 /// <summary>

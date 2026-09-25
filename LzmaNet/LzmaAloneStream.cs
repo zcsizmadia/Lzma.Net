@@ -98,7 +98,11 @@ public sealed class LzmaAloneCompressStream : Stream
     /// <inheritdoc/>
     /// <exception cref="LzmaMemoryLimitException">The total input would exceed
     /// <see cref="MaxInputSize"/>.</exception>
+#if !NETSTANDARD2_0
     public override void Write(ReadOnlySpan<byte> buffer)
+#else
+    public void Write(ReadOnlySpan<byte> buffer)
+#endif
     {
         Portable.ThrowIfDisposed(_disposed, this);
         if (_finished)
@@ -120,7 +124,7 @@ public sealed class LzmaAloneCompressStream : Stream
         // header value is rounded up to a power of two — xz's alone decoder
         // mis-decodes streams whose header carries a non-canonical dictionary
         // size (observed empirically: silent truncation with exit code 0).
-        long capped = Math.Clamp(_inputBuffer.Length, 4096, _props.DictionarySize);
+        long capped = Portable.Clamp(_inputBuffer.Length, 4096, _props.DictionarySize);
         _props.DictionarySize = (int)System.Numerics.BitOperations.RoundUpToPowerOf2((uint)capped);
 
         // 13-byte header: properties byte, dictionary size (LE32),
@@ -228,7 +232,11 @@ public sealed class LzmaAloneDecompressStream : Stream
     public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
 
     /// <inheritdoc/>
+#if !NETSTANDARD2_0
     public override int Read(Span<byte> buffer)
+#else
+    public int Read(Span<byte> buffer)
+#endif
     {
         Portable.ThrowIfDisposed(_disposed, this);
         EnsureDecoded();

@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Runs the test suite on .NET Framework, which is what the netstandard2.0
+    asset actually ships to. The Portable20 project executes that same asset on
+    .NET 10, which exercises the shims but against a different BCL; only this
+    project runs it on the framework it was built for.
+
+    Deliberately NOT in Lzma.Net.slnx: net472 cannot run on the Linux and macOS
+    CI jobs, which test the solution. The 'test (.NET Framework)' workflow job
+    runs this explicitly on Windows, so losing the coverage would mean deleting
+    a visible check.
+
+    Run it locally with:
+      dotnet test LzmaNet.Tests.NetFx/LzmaNet.Tests.NetFx.csproj -c Release
+  -->
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsTestProject>true</IsTestProject>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="TUnit" />
+    <!-- Reference assemblies as a package, so this builds without a .NET
+         Framework targeting pack installed on the machine. -->
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../LzmaNet/LzmaNet.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -23,6 +23,10 @@ namespace LzmaNet;
 /// </code>
 /// </remarks>
 public sealed class XzCompressStream : Stream
+#if NETSTANDARD2_0
+    // netstandard2.0's Stream does not implement IAsyncDisposable.
+    , IAsyncDisposable
+#endif
 {
     private readonly Stream _baseStream;
     private readonly bool _leaveOpen;
@@ -99,7 +103,11 @@ public sealed class XzCompressStream : Stream
     }
 
     /// <inheritdoc/>
+#if !NETSTANDARD2_0
     public override void Write(ReadOnlySpan<byte> buffer)
+#else
+    public void Write(ReadOnlySpan<byte> buffer)
+#endif
     {
         Portable.ThrowIfDisposed(_disposed, this);
         if (_finished)
@@ -151,8 +159,13 @@ public sealed class XzCompressStream : Stream
     }
 
     /// <inheritdoc/>
+#if !NETSTANDARD2_0
     public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer,
         CancellationToken cancellationToken = default)
+#else
+    public async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer,
+        CancellationToken cancellationToken = default)
+#endif
     {
         Portable.ThrowIfDisposed(_disposed, this);
         if (_finished)
@@ -248,7 +261,7 @@ public sealed class XzCompressStream : Stream
         if (_dictionaryExplicit)
             return _props;
 
-        int capped = (int)Math.Clamp((long)blockLength, 4096, _props.DictionarySize);
+        int capped = (int)Portable.Clamp((long)blockLength, 4096, _props.DictionarySize);
         if (capped >= _props.DictionarySize)
             return _props;
 
@@ -430,7 +443,11 @@ public sealed class XzCompressStream : Stream
     }
 
     /// <inheritdoc/>
+#if !NETSTANDARD2_0
     public override async ValueTask DisposeAsync()
+#else
+    public async ValueTask DisposeAsync()
+#endif
     {
         if (!_disposed)
         {
