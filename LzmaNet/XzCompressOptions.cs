@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: 0BSD
 
+using LzmaNet.Compatibility;
 using LzmaNet.Xz;
 
 namespace LzmaNet;
@@ -139,7 +140,7 @@ public sealed class XzCompressOptions
                 $"Dictionary size must be at most {MaxDictionarySize} bytes (512 MB).");
         if (BlockSize.HasValue && BlockSize.Value < 4096)
             throw new ArgumentOutOfRangeException(nameof(BlockSize), "Block size must be at least 4 KB.");
-        if (!Enum.IsDefined(Filter))
+        if (!Portable.IsDefined(Filter))
             throw new ArgumentOutOfRangeException(nameof(Filter));
         if (Filter == XzFilterType.Delta && (DeltaDistance < 1 || DeltaDistance > 256))
             throw new ArgumentOutOfRangeException(nameof(DeltaDistance), "Delta distance must be 1-256.");

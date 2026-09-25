@@ -26,8 +26,15 @@
     <None Include="../NOTICE" Pack="true" PackagePath="" />
   </ItemGroup>
 
+  <!-- netstandard2.1 has no in-box Unsafe; everything else it needs is polyfilled
+       under Compatibility/. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
+    <PackageReference Include="System.Runtime.CompilerServices.Unsafe" />
+  </ItemGroup>
+
   <ItemGroup>
     <InternalsVisibleTo Include="LzmaNet.Tests" />
+    <InternalsVisibleTo Include="LzmaNet.Tests.Portable" />
     <InternalsVisibleTo Include="LzmaNet.Benchmark" />
   </ItemGroup>
 

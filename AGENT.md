@@ -23,6 +23,8 @@ dotnet run --project bench/LzmaNet.Bench -c Release
 ```
 
 The SDK is .NET 10 preview. All three commands run across `net8.0`, `net9.0`, and `net10.0` targets.
+The library also builds `netstandard2.1` (locally and in CI) for consumers that
+are not on .NET 8+; see **Portable target** below.
 
 ## Solution Structure
 
@@ -30,6 +32,7 @@ The SDK is .NET 10 preview. All three commands run across `net8.0`, `net9.0`, an
 Lzma.Net.slnx                    # XML-format solution (not classic .sln)
 LzmaNet/                          # Main library
   Check/                          # CRC32, CRC64 implementations
+  Compatibility/                  # netstandard2.1 shims (see Portable target)
   Filters/                        # BCJ/Delta filters (X86, ARM, ARM64, etc.)
   LZ/                             # LZ77 match finder (HC4)
   Lzma/                           # LZMA encoder/decoder
@@ -42,6 +45,7 @@ LzmaNet/                          # Main library
   XzCompressOptions.cs            # Options + XzCheckType enum
   LzmaException.cs                # Exception types
 LzmaNet.Tests/                    # TUnit tests
+LzmaNet.Tests.Portable/           # Same tests, run against the netstandard2.1 asset
 LzmaNet.Benchmark/                # Benchmark (not in solution, net10.0 only)
 ```
 
@@ -77,6 +81,35 @@ This is a core design principle. Always prefer:
 - **BT4 invariant (critical)**: `Lzma2Encoder` appends the WHOLE block to the match finder before encoding any chunk. The binary-tree finder's early subtree adoption assumes its length limit never grows for later insertions; per-chunk feeding shrinks/regrows the limit at every chunk tail and CORRUPTS the tree (false matches). Symbol lengths are capped at chunk boundaries at use time instead
 - The optimal parser (`EncodeChunkOptimal`) is a forward DP: node[cur] must be final before `RelaxFrom(cur)` runs (all edges go forward). Node rep/state tracking mirrors the emission methods' updates exactly — if `EncodeRepMatch`/`EncodeMatch` rotation logic changes, `RotateReps`/state transitions in the parser must change with it
 - Prices (`RangeCoder/Price.cs`) are 1/16-bit estimates from the reference LZMA table; they affect only ratio, never correctness
+
+### Portable target
+
+The library ships `netstandard2.1` alongside `net8.0`/`net9.0`/`net10.0`, so it
+runs where .NET 8 is not available. Two rules keep that target working:
+
+- **Anything newer than netstandard2.1 goes through `Compatibility/`.** APIs
+  added after it — `Array.MaxLength`, `ObjectDisposedException.ThrowIf`,
+  `SHA256.HashData`, the single-argument `Array.Clear`, generic `Enum.IsDefined`
+  — are called via `Portable`, which forwards to the real framework method on
+  .NET 8+ and supplies an equivalent otherwise. `System.Numerics.BitOperations`
+  and `IsExternalInit` are declared in the framework's own namespaces for the
+  portable build only, so those call sites need no change.
+  `MemoryMarshal.GetArrayDataReference` is reached through a per-file alias
+  (`Compatibility/MemoryMarshal.cs`) so the decoder's hot loops stay identical.
+- **Hardware intrinsics live behind `#if NET8_0_OR_GREATER`.** netstandard2.1
+  cannot reference `System.Runtime.Intrinsics` at all, so the CRC folding path
+  and the `Vector256`/`Vector128` match comparison are not compiled there;
+  `CrcFolding.IsSupported` is hard-false and everything falls through to
+  slicing-by-8 and the 64-bit word compare.
+
+Every `Portable` member is `AggressiveInlining` and picks the same framework
+overload the code used before, so the .NET 8+ targets keep their original code:
+apart from preprocessor directives, the hot files are textually unchanged.
+
+`LzmaNet.Tests.Portable` compiles the whole test suite a second time against the
+netstandard2.1 asset — `SetTargetFramework` on its project reference is what
+forces that, and `PortableAssetTests` fails if it is ever dropped. Compiling the
+portable target proves nothing on its own; only that run exercises the shims.
 
 ### Testing
 - **TUnit** — the test project requires `<OutputType>Exe</OutputType>` and `<IsTestProject>true</IsTestProject>`

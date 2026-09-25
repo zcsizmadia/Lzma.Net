@@ -2,4 +2,5 @@
   <Project Path="LzmaNet.Benchmark/LzmaNet.Benchmark.csproj" />
   <Project Path="LzmaNet/LzmaNet.csproj" />
   <Project Path="LzmaNet.Tests/LzmaNet.Tests.csproj" />
+  <Project Path="LzmaNet.Tests.Portable/LzmaNet.Tests.Portable.csproj" />
 </Solution>

@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Runs the whole test suite against the netstandard2.1 asset instead of the
+    net8.0+ one. Compiling the portable target proves nothing on its own: the
+    polyfills under Compatibility/ and the intrinsic-free CRC and match paths
+    only get exercised if something actually executes them.
+
+    The test host stays on the default modern TFM; SetTargetFramework is what
+    forces the reference to resolve to netstandard2.1.
+  -->
+  <PropertyGroup>
+    <TargetFramework>$(DefaultTargetFramework)</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsTestProject>true</IsTestProject>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <DefineConstants>$(DefineConstants);PORTABLE_ASSET_TESTS</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../LzmaNet.Tests/**/*.cs" Exclude="../LzmaNet.Tests/obj/**;../LzmaNet.Tests/bin/**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="TUnit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../LzmaNet/LzmaNet.csproj"
+                      SetTargetFramework="TargetFramework=netstandard2.1" />
+  </ItemGroup>
+
+</Project>

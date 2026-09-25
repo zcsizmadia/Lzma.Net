@@ -3,7 +3,10 @@
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+
+#if NET8_0_OR_GREATER
 using System.Runtime.Intrinsics;
+#endif
 
 namespace LzmaNet.LZ;
 
@@ -33,6 +36,7 @@ internal static class MatchLength
         int len = 0;
         ref byte bufRef = ref MemoryMarshal.GetReference(block);
 
+#if NET8_0_OR_GREATER
         if (Vector256.IsHardwareAccelerated)
         {
             while (len + 32 <= limit)
@@ -57,6 +61,7 @@ internal static class MatchLength
                 len += 16;
             }
         }
+#endif
 
         if (BitConverter.IsLittleEndian)
         {
