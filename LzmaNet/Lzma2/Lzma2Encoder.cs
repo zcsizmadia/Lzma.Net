@@ -4,6 +4,8 @@ using System.Buffers;
 
 using LzmaNet.Lzma;
 
+using LzmaNet.Compatibility;
+
 namespace LzmaNet.Lzma2;
 
 /// <summary>

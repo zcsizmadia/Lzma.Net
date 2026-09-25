@@ -23,8 +23,8 @@ dotnet run --project bench/LzmaNet.Bench -c Release
 ```
 
 The SDK is .NET 10 preview. All three commands run across `net8.0`, `net9.0`, and `net10.0` targets.
-The library also builds `netstandard2.1` (locally and in CI) for consumers that
-are not on .NET 8+; see **Portable target** below.
+The library also builds `netstandard2.0` and `netstandard2.1` (locally and in CI)
+for consumers that are not on .NET 8+; see **Portable targets** below.
 
 ## Solution Structure
 
@@ -32,7 +32,7 @@ are not on .NET 8+; see **Portable target** below.
 Lzma.Net.slnx                    # XML-format solution (not classic .sln)
 LzmaNet/                          # Main library
   Check/                          # CRC32, CRC64 implementations
-  Compatibility/                  # netstandard2.1 shims (see Portable target)
+  Compatibility/                  # netstandard shims (see Portable targets)
   Filters/                        # BCJ/Delta filters (X86, ARM, ARM64, etc.)
   LZ/                             # LZ77 match finder (HC4)
   Lzma/                           # LZMA encoder/decoder
@@ -45,7 +45,9 @@ LzmaNet/                          # Main library
   XzCompressOptions.cs            # Options + XzCheckType enum
   LzmaException.cs                # Exception types
 LzmaNet.Tests/                    # TUnit tests
-LzmaNet.Tests.Portable/           # Same tests, run against the netstandard2.1 asset
+LzmaNet.Tests.Portable20/         # Same tests, run against the netstandard2.0 asset
+LzmaNet.Tests.Portable21/         # Same tests, run against the netstandard2.1 asset
+LzmaNet.Tests.NetFx/              # Targeted suite on .NET Framework (not in the solution)
 LzmaNet.Benchmark/                # Benchmark (not in solution, net10.0 only)
 ```
 
@@ -82,34 +84,87 @@ This is a core design principle. Always prefer:
 - The optimal parser (`EncodeChunkOptimal`) is a forward DP: node[cur] must be final before `RelaxFrom(cur)` runs (all edges go forward). Node rep/state tracking mirrors the emission methods' updates exactly — if `EncodeRepMatch`/`EncodeMatch` rotation logic changes, `RotateReps`/state transitions in the parser must change with it
 - Prices (`RangeCoder/Price.cs`) are 1/16-bit estimates from the reference LZMA table; they affect only ratio, never correctness
 
-### Portable target
+### Portable targets
 
-The library ships `netstandard2.1` alongside `net8.0`/`net9.0`/`net10.0`, so it
-runs where .NET 8 is not available. Two rules keep that target working:
+The library ships `netstandard2.0` and `netstandard2.1` alongside
+`net8.0`/`net9.0`/`net10.0`, so it runs where .NET 8 is not available. Four rules
+keep those targets working.
 
-- **Anything newer than netstandard2.1 goes through `Compatibility/`.** APIs
-  added after it — `Array.MaxLength`, `ObjectDisposedException.ThrowIf`,
+- **Anything newer than the target goes through `Compatibility/`.** APIs added
+  after netstandard2.1 — `Array.MaxLength`, `ObjectDisposedException.ThrowIf`,
   `SHA256.HashData`, the single-argument `Array.Clear`, generic `Enum.IsDefined`
-  — are called via `Portable`, which forwards to the real framework method on
-  .NET 8+ and supplies an equivalent otherwise. `System.Numerics.BitOperations`
-  and `IsExternalInit` are declared in the framework's own namespaces for the
-  portable build only, so those call sites need no change.
+  — and the ones netstandard2.0 also lacks — `Array.Fill`, `Math.Clamp` — are
+  called via `Portable`, which forwards to the real framework method on .NET 8+
+  and supplies an equivalent otherwise. `BitOperations`, `IsExternalInit`,
+  `Index` and `Range` are declared in the framework's own namespaces for the
+  builds that need them, so those call sites need no change.
   `MemoryMarshal.GetArrayDataReference` is reached through a per-file alias
   (`Compatibility/MemoryMarshal.cs`) so the decoder's hot loops stay identical.
-- **Hardware intrinsics live behind `#if NET8_0_OR_GREATER`.** netstandard2.1
-  cannot reference `System.Runtime.Intrinsics` at all, so the CRC folding path
-  and the `Vector256`/`Vector128` match comparison are not compiled there;
-  `CrcFolding.IsSupported` is hard-false and everything falls through to
+- **Hardware intrinsics live behind `#if NET8_0_OR_GREATER`.** Neither
+  netstandard target can reference `System.Runtime.Intrinsics`, so the CRC
+  folding path and the `Vector256`/`Vector128` match comparison are not compiled
+  there; `CrcFolding.IsSupported` is hard-false and everything falls through to
   slicing-by-8 and the 64-bit word compare.
+- **Use `#if NETSTANDARD2_0`, not `#if NET8_0_OR_GREATER`, for Stream shape.**
+  netstandard2.1 *does* have the span and memory overloads of `Stream` and
+  `DisposeAsync`; only netstandard2.0 lacks them. Gating those on the wrong
+  symbol silently turns the overrides into hiding members on netstandard2.1, so
+  a `Stream`-typed caller would reach the base implementation instead of ours.
+  The compiler warns (CS0114) — do not suppress it.
+- **netstandard2.0 calls other streams through `StreamCompat`.** The library
+  hands arbitrary caller-supplied streams a `Span`/`Memory`, which that target's
+  `Stream` cannot take, so extension methods rent a pooled array and use the
+  `byte[]` overloads. This costs a copy, and it is why the netstandard2.0 build
+  is the slowest of the five.
 
 Every `Portable` member is `AggressiveInlining` and picks the same framework
 overload the code used before, so the .NET 8+ targets keep their original code:
-apart from preprocessor directives, the hot files are textually unchanged.
+apart from preprocessor directives, the only change to the hot files is
+`Array.Fill` becoming `Portable.Fill`, which inlines back to `Array.Fill` there.
 
-`LzmaNet.Tests.Portable` compiles the whole test suite a second time against the
-netstandard2.1 asset — `SetTargetFramework` on its project reference is what
-forces that, and `PortableAssetTests` fails if it is ever dropped. Compiling the
-portable target proves nothing on its own; only that run exercises the shims.
+`LzmaNet.Tests.Portable20` and `LzmaNet.Tests.Portable21` compile the whole test
+suite again against each netstandard asset — `SetTargetFramework` on their
+project references is what forces that, and `PortableAssetTests` asserts the
+exact framework name it loaded, so dropping the setting or pointing both at one
+asset fails. Compiling a portable target proves nothing on its own; only those
+runs exercise the shims.
+
+One test, `DecompressStream_ReadAsync_UsesUnderlyingAsyncIo`, is excluded from
+the netstandard2.0 run. That build cannot see `Stream.ReadAsync(Memory<byte>, …)`
+and calls the `byte[]` overload, whose .NET default ends in a synchronous read —
+visible only because the test host runs that asset on .NET 10. Real consumers of
+it are on .NET Framework, where the array overload is itself the async path.
+
+`LzmaNet.Tests.NetFx` runs a targeted suite on .NET Framework 4.7.2, which is
+what the netstandard2.0 asset actually ships to — the Portable20 project runs
+that same asset on .NET 10, a different BCL. It is **not** in the solution,
+because net472 cannot run on the Linux and macOS CI jobs; the
+`test (.NET Framework)` workflow job invokes it, and locally:
+
+```shell
+dotnet test LzmaNet.Tests.NetFx/LzmaNet.Tests.NetFx.csproj -c Release
+```
+
+It is a focused suite rather than the shared sources: those are written against
+`Array.Fill`, `Array.MaxLength`, span `Stream.Write` and `Process.WaitForExitAsync`,
+so compiling them for net472 would need a second compat layer running through
+shared test code. Instead each test drives one shim through the public API.
+Nothing needs installing — Windows ships the 4.8 runtime, and
+`Microsoft.NETFramework.ReferenceAssemblies` supplies the reference assemblies,
+so the project builds even where no targeting pack exists. TUnit needs one
+shim of its own (`ModuleInitializerAttribute`, in `Shims.cs`).
+
+Known limit, measured rather than assumed: breaking `BitOperations.TrailingZeroCount`
+so the error survives the caller's `>> 3` fails two of these tests, but returning
+half from `RoundUpToPowerOf2` does not fail any — preset dictionary sizes are
+already powers of two, so that member is close to inert. Do not read a green run
+as proof that every shim is exercised.
+
+### Adding a new target
+
+Roslyn stops reporting method-body errors while declaration-level errors are
+outstanding, so the first build of a new target under-reports what is missing.
+Fix the missing types and bad overrides, build again, and expect a second wave.
 
 ### Testing
 - **TUnit** — the test project requires `<OutputType>Exe</OutputType>` and `<IsTestProject>true</IsTestProject>`

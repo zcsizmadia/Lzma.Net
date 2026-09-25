@@ -3,6 +3,8 @@
 using System.Buffers;
 using System.Numerics;
 
+using LzmaNet.Compatibility;
+
 namespace LzmaNet.LZ;
 
 /// <summary>
@@ -67,7 +69,7 @@ internal abstract class SlidingWindowMatchFinder : IMatchFinder
         _hashMask = (1 << LzHash.HashBits(dictSize)) - 1;
         int hashSize = LzHash.TableSize(_hashMask);
         _hash = ArrayPool<int>.Shared.Rent(hashSize);
-        Array.Fill(_hash, -1, 0, hashSize);
+        Portable.Fill(_hash, -1, 0, hashSize);
 
         // Sized so a full cyclic span can accumulate behind the window before the
         // buffer fills, which is what guarantees a cyclic-multiple slide is
@@ -168,7 +170,7 @@ internal abstract class SlidingWindowMatchFinder : IMatchFinder
         _pos = 0;
         _streamPos = 0;
         _hashUpdatedAtPos = false;
-        Array.Fill(_hash, -1, 0, LzHash.TableSize(_hashMask));
+        Portable.Fill(_hash, -1, 0, LzHash.TableSize(_hashMask));
         ClearPositions();
     }
 

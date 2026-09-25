@@ -1,27 +1,27 @@
 <Project>
 
   <PropertyGroup>
-    <Version>5.8.4.1</Version>
+    <Version>5.8.4.2</Version>
   </PropertyGroup>
 
   <PropertyGroup>
     <DefaultTargetFrameworks>net8.0;net9.0;net10.0</DefaultTargetFrameworks>
     <DefaultTargetFramework>net10.0</DefaultTargetFramework>
 
-    <!-- Portable target for consumers that are not on .NET 8+. It has no
-         hardware intrinsics, so it is always built locally too: a break there
-         would otherwise only surface in CI. -->
-    <PortableTargetFramework>netstandard2.1</PortableTargetFramework>
+    <!-- Portable targets for consumers that are not on .NET 8+. They have no
+         hardware intrinsics, so they are always built locally too: a break
+         there would otherwise only surface in CI. -->
+    <PortableTargetFrameworks>netstandard2.0;netstandard2.1</PortableTargetFrameworks>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(CI)' == 'true'">
-    <ClassLibTargetFrameworks>$(DefaultTargetFrameworks);$(PortableTargetFramework)</ClassLibTargetFrameworks>
+    <ClassLibTargetFrameworks>$(DefaultTargetFrameworks);$(PortableTargetFrameworks)</ClassLibTargetFrameworks>
     <TestTargetFrameworks>$(DefaultTargetFrameworks)</TestTargetFrameworks>
     <BenchmarkTargetFramework>$(DefaultTargetFramework)</BenchmarkTargetFramework>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(CI)' != 'true'">
-    <ClassLibTargetFrameworks>$(DefaultTargetFramework);$(PortableTargetFramework)</ClassLibTargetFrameworks>
+    <ClassLibTargetFrameworks>$(DefaultTargetFramework);$(PortableTargetFrameworks)</ClassLibTargetFrameworks>
     <TestTargetFrameworks>$(DefaultTargetFramework)</TestTargetFrameworks>
     <BenchmarkTargetFramework>$(DefaultTargetFramework)</BenchmarkTargetFramework>
   </PropertyGroup>

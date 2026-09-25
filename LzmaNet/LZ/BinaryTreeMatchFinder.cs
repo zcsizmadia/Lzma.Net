@@ -4,6 +4,8 @@ using System.Buffers;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 
+using LzmaNet.Compatibility;
+
 namespace LzmaNet.LZ;
 
 /// <summary>
@@ -35,7 +37,7 @@ internal sealed class BinaryTreeMatchFinder : SlidingWindowMatchFinder
         _maxMatchDelta = Math.Min(_windowSize, _cyclicBufferSize - 1);
 
         _son = ArrayPool<int>.Shared.Rent(2 * _cyclicBufferSize);
-        Array.Fill(_son, -1, 0, 2 * _cyclicBufferSize);
+        Portable.Fill(_son, -1, 0, 2 * _cyclicBufferSize);
     }
 
     protected override void RebasePositions(int delta)
@@ -49,7 +51,7 @@ internal sealed class BinaryTreeMatchFinder : SlidingWindowMatchFinder
     }
 
     protected override void ClearPositions()
-        => Array.Fill(_son, -1, 0, 2 * _cyclicBufferSize);
+        => Portable.Fill(_son, -1, 0, 2 * _cyclicBufferSize);
 
     protected override void ReleasePositions()
     {

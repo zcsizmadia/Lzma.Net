@@ -1,20 +1,20 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    Runs the whole test suite against the netstandard2.1 asset instead of the
+    Runs the whole test suite against the netstandard2.0 asset instead of the
     net8.0+ one. Compiling the portable target proves nothing on its own: the
     polyfills under Compatibility/ and the intrinsic-free CRC and match paths
     only get exercised if something actually executes them.
 
     The test host stays on the default modern TFM; SetTargetFramework is what
-    forces the reference to resolve to netstandard2.1.
+    forces the reference to resolve to netstandard2.0.
   -->
   <PropertyGroup>
     <TargetFramework>$(DefaultTargetFramework)</TargetFramework>
     <OutputType>Exe</OutputType>
     <IsTestProject>true</IsTestProject>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
-    <DefineConstants>$(DefineConstants);PORTABLE_ASSET_TESTS</DefineConstants>
+    <DefineConstants>$(DefineConstants);PORTABLE_ASSET_TESTS;PORTABLE_ASSET_20</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
@@ -23,11 +23,15 @@
 
   <ItemGroup>
     <PackageReference Include="TUnit" />
+    <!-- The netstandard2.0 asset declares IAsyncDisposable from this package;
+         the test host needs the same assembly to see it. On net10.0 it simply
+         type-forwards to the runtime's own interface. -->
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="../LzmaNet/LzmaNet.csproj"
-                      SetTargetFramework="TargetFramework=netstandard2.1" />
+                      SetTargetFramework="TargetFramework=netstandard2.0" />
   </ItemGroup>
 
 </Project>

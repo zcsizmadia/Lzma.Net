@@ -2,6 +2,8 @@
 
 using System.Runtime.CompilerServices;
 
+using LzmaNet.Compatibility;
+
 namespace LzmaNet.RangeCoder;
 
 /// <summary>
@@ -225,7 +227,7 @@ internal ref struct RangeDecoder
     public static void InitProbs(ushort[] probs)
     {
         const ushort kProbInitValue = (ushort)(kBitModelTotal >> 1); // 1024
-        Array.Fill(probs, kProbInitValue);
+        Portable.Fill(probs, kProbInitValue);
     }
 
     /// <summary>
@@ -235,6 +237,6 @@ internal ref struct RangeDecoder
     public static void InitProbs(ushort[] probs, int offset, int count)
     {
         const ushort kProbInitValue = (ushort)(kBitModelTotal >> 1);
-        Array.Fill(probs, kProbInitValue, offset, count);
+        Portable.Fill(probs, kProbInitValue, offset, count);
     }
 }

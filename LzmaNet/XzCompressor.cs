@@ -6,6 +6,8 @@ using LzmaNet.Lzma;
 using LzmaNet.Lzma2;
 using LzmaNet.Xz;
 
+using LzmaNet.Compatibility;
+
 namespace LzmaNet;
 
 /// <summary>

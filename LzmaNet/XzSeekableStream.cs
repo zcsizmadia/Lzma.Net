@@ -125,7 +125,11 @@ public sealed class XzSeekableStream : Stream
     }
 
     /// <inheritdoc/>
+#if !NETSTANDARD2_0
     public override int Read(Span<byte> buffer)
+#else
+    public int Read(Span<byte> buffer)
+#endif
     {
         Portable.ThrowIfDisposed(_disposed, this);
 

@@ -26,15 +26,24 @@
     <None Include="../NOTICE" Pack="true" PackagePath="" />
   </ItemGroup>
 
-  <!-- netstandard2.1 has no in-box Unsafe; everything else it needs is polyfilled
-       under Compatibility/. -->
-  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
+  <!-- Neither netstandard target has an in-box Unsafe; everything else they
+       need is polyfilled under Compatibility/. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0' or '$(TargetFramework)' == 'netstandard2.1'">
     <PackageReference Include="System.Runtime.CompilerServices.Unsafe" />
+  </ItemGroup>
+
+  <!-- netstandard2.0 additionally predates Span, ValueTask and IAsyncDisposable. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="System.Memory" />
+    <PackageReference Include="System.Threading.Tasks.Extensions" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" />
   </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="LzmaNet.Tests" />
-    <InternalsVisibleTo Include="LzmaNet.Tests.Portable" />
+    <InternalsVisibleTo Include="LzmaNet.Tests.Portable20" />
+    <InternalsVisibleTo Include="LzmaNet.Tests.Portable21" />
+    <InternalsVisibleTo Include="LzmaNet.Tests.NetFx" />
     <InternalsVisibleTo Include="LzmaNet.Benchmark" />
   </ItemGroup>
 
