@@ -4,6 +4,8 @@ using System.Buffers;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 
+using LzmaNet.Compatibility;
+
 namespace LzmaNet.LZ;
 
 /// <summary>
@@ -21,7 +23,7 @@ internal sealed class HashChainMatchFinder : SlidingWindowMatchFinder
         : base(dictSize, matchMaxLen, cutValue)
     {
         _chain = ArrayPool<int>.Shared.Rent(_cyclicBufferSize);
-        Array.Fill(_chain, -1, 0, _cyclicBufferSize);
+        Portable.Fill(_chain, -1, 0, _cyclicBufferSize);
     }
 
     protected override void RebasePositions(int delta)
@@ -34,7 +36,7 @@ internal sealed class HashChainMatchFinder : SlidingWindowMatchFinder
     }
 
     protected override void ClearPositions()
-        => Array.Fill(_chain, -1, 0, _cyclicBufferSize);
+        => Portable.Fill(_chain, -1, 0, _cyclicBufferSize);
 
     protected override void ReleasePositions()
     {

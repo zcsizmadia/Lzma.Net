@@ -77,6 +77,20 @@ public class StreamAndFormatRegressionTests
         await Assert.That(source.ReadByte()).IsEqualTo(0x7B);
     }
 
+#if !PORTABLE_ASSET_20
+    /// <summary>
+    /// Not run against the netstandard2.0 asset. That build cannot see
+    /// <c>Stream.ReadAsync(Memory&lt;byte&gt;, CancellationToken)</c> — the member does
+    /// not exist in netstandard2.0 — so it calls the <c>byte[]</c> overload instead.
+    /// <see cref="AsyncOnlyReadStream"/> overrides only the memory-based one, and
+    /// the .NET default for the array overload ends up in a synchronous
+    /// <c>Read</c>, which that helper rejects.
+    ///
+    /// This only shows up because the test host runs the netstandard2.0 asset on
+    /// .NET 10. Real consumers of that asset are on .NET Framework, where
+    /// <c>ReadAsync(byte[], …)</c> is itself the asynchronous path, and consumers on
+    /// modern runtimes resolve to the net8.0 asset, which overrides the memory form.
+    /// </summary>
     [Test]
     public async Task DecompressStream_ReadAsync_UsesUnderlyingAsyncIo()
     {
@@ -91,6 +105,7 @@ public class StreamAndFormatRegressionTests
 
         await Assert.That(output.ToArray().SequenceEqual(original)).IsTrue();
     }
+#endif
 
     [Test]
     public async Task XzBlock_AppliesBcjStartOffsetFromProperties()

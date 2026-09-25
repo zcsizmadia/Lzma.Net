@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: 0BSD
 
+using LzmaNet.Compatibility;
+
 namespace LzmaNet;
 
 /// <summary>
