@@ -5,6 +5,7 @@ using System.Buffers.Binary;
 using System.Security.Cryptography;
 
 using LzmaNet.Check;
+using LzmaNet.Compatibility;
 using LzmaNet.Filters;
 using LzmaNet.Lzma2;
 
@@ -748,7 +749,7 @@ internal static class XzBlock
                 Crc64.WriteLE(data, checkBuf);
                 break;
             case XzConstants.CheckSha256:
-                System.Security.Cryptography.SHA256.HashData(data, checkBuf);
+                Portable.Sha256(data, checkBuf);
                 break;
         }
 
@@ -771,7 +772,7 @@ internal static class XzBlock
                 Crc64.WriteLE(data, checkBuf);
                 break;
             case XzConstants.CheckSha256:
-                SHA256.HashData(data, checkBuf);
+                Portable.Sha256(data, checkBuf);
                 break;
             default:
                 checkBuf.Clear(); // Unknown check — write zeros
@@ -797,7 +798,7 @@ internal static class XzBlock
                 break;
             case XzConstants.CheckSha256:
                 Span<byte> hash = stackalloc byte[32];
-                SHA256.HashData(data, hash);
+                Portable.Sha256(data, hash);
                 if (!hash.SequenceEqual(expected[..32]))
                     throw new LzmaDataErrorException("XZ block SHA-256 check failed.");
                 break;

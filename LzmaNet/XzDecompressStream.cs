@@ -2,6 +2,7 @@
 
 using System.Buffers;
 
+using LzmaNet.Compatibility;
 using LzmaNet.Xz;
 
 namespace LzmaNet;
@@ -146,7 +147,7 @@ public sealed class XzDecompressStream : Stream
     /// <inheritdoc/>
     public override int Read(Span<byte> buffer)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        Portable.ThrowIfDisposed(_disposed, this);
 
         if (_allStreamsRead)
             return 0;
@@ -371,7 +372,7 @@ public sealed class XzDecompressStream : Stream
     private async ValueTask<int> ReadAsyncCore(
         Memory<byte> buffer, CancellationToken cancellationToken)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        Portable.ThrowIfDisposed(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
 
         if (_allStreamsRead)

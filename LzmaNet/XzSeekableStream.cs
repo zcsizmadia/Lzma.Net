@@ -4,6 +4,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 
 using LzmaNet.Check;
+using LzmaNet.Compatibility;
 using LzmaNet.Xz;
 
 namespace LzmaNet;
@@ -126,7 +127,7 @@ public sealed class XzSeekableStream : Stream
     /// <inheritdoc/>
     public override int Read(Span<byte> buffer)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        Portable.ThrowIfDisposed(_disposed, this);
 
         int totalCopied = 0;
         while (totalCopied < buffer.Length && _position < _totalUncompressedSize)

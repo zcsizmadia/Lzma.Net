@@ -5,6 +5,12 @@ using System.Runtime.InteropServices;
 
 using LzmaNet.RangeCoder;
 
+#if !NET8_0_OR_GREATER
+// netstandard2.1 has no MemoryMarshal.GetArrayDataReference; see
+// Compatibility/MemoryMarshal.cs.
+using MemoryMarshal = LzmaNet.Compatibility.MemoryMarshal;
+#endif
+
 namespace LzmaNet.Lzma;
 
 /// <summary>
