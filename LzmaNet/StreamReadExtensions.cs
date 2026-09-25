@@ -12,7 +12,7 @@ internal static class StreamReadExtensions
     /// truncated input.
     /// </summary>
     /// <remarks>
-    /// <see cref="Stream.ReadExactly(Span{byte})"/> does the same job but reports
+    /// The framework's own <c>Stream.ReadExactly</c> does the same job but reports
     /// truncation as <see cref="EndOfStreamException"/>; every caller here needs
     /// it surfaced as <see cref="LzmaDataErrorException"/> so a truncated
     /// container is indistinguishable from any other corrupt input.

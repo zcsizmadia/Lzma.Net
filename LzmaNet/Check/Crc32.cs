@@ -3,10 +3,17 @@
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+
+#if NET8_0_OR_GREATER
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 
 using ArmAes = System.Runtime.Intrinsics.Arm.Aes;
+#else
+// netstandard2.1 has no System.Runtime.Intrinsics at all, so the folding path
+// below is not compiled there and Compute falls through to slicing-by-8.
+using MemoryMarshal = LzmaNet.Compatibility.MemoryMarshal;
+#endif
 
 namespace LzmaNet.Check;
 
@@ -29,12 +36,14 @@ internal static class Crc32
     // 128-bit accumulator, element 1 the high half. Exponent pairs follow the
     // standard reflected-CRC folding scheme for fold distances of 512 bits
     // (4 accumulators, 64-byte stride) and 128 bits (combine/single stride).
+#if NET8_0_OR_GREATER
     private static readonly Vector128<ulong> Fold512 = Vector128.Create(
         CrcFolding.XPowModP(512 + 32 - 1, PolyNormal, 32),
         CrcFolding.XPowModP(512 + 32 - 65, PolyNormal, 32));
     private static readonly Vector128<ulong> Fold128 = Vector128.Create(
         CrcFolding.XPowModP(128 + 32 - 1, PolyNormal, 32),
         CrcFolding.XPowModP(128 + 32 - 65, PolyNormal, 32));
+#endif
 
     private static uint[] CreateTable()
     {
@@ -72,10 +81,14 @@ internal static class Crc32
     public static uint Compute(ReadOnlySpan<byte> data, uint crc = 0)
     {
         crc = ~crc;
+#if NET8_0_OR_GREATER
         if (CrcFolding.IsSupported && data.Length >= 64)
             crc = UpdateClmul(data, crc);
         else
             crc = UpdateScalar(data, crc);
+#else
+        crc = UpdateScalar(data, crc);
+#endif
         return ~crc;
     }
 
@@ -115,6 +128,7 @@ internal static class Crc32
         return crc;
     }
 
+#if NET8_0_OR_GREATER
     private static uint UpdateClmul(ReadOnlySpan<byte> data, uint crc)
     {
         ref byte src = ref MemoryMarshal.GetReference(data);
@@ -176,6 +190,7 @@ internal static class Crc32
              ^ ArmAes.PolynomialMultiplyWideningUpper(acc, k)
              ^ data;
     }
+#endif
 
     /// <summary>
     /// Computes CRC32 and writes it as 4 little-endian bytes.
@@ -210,7 +225,12 @@ internal static class CrcFolding
     /// Whether a carry-less multiply instruction is available
     /// (PCLMULQDQ on x86/x64, PMULL via the crypto extension on ARM64).
     /// </summary>
-    public static bool IsSupported => Pclmulqdq.IsSupported || ArmAes.IsSupported;
+    public static bool IsSupported =>
+#if NET8_0_OR_GREATER
+        Pclmulqdq.IsSupported || ArmAes.IsSupported;
+#else
+        false; // netstandard2.1 cannot reach the intrinsics at all
+#endif
 
     /// <summary>
     /// Returns the bit-reflected value of (x^exponent mod P) for a CRC of the

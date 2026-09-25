@@ -3,10 +3,17 @@
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+
+#if NET8_0_OR_GREATER
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 
 using ArmAes = System.Runtime.Intrinsics.Arm.Aes;
+#else
+// netstandard2.1 has no System.Runtime.Intrinsics at all, so the folding path
+// below is not compiled there and Compute falls through to slicing-by-8.
+using MemoryMarshal = LzmaNet.Compatibility.MemoryMarshal;
+#endif
 
 namespace LzmaNet.Check;
 
@@ -21,12 +28,14 @@ internal static class Crc64
     private const ulong PolyNormal = 0x42F0E1EBA9EA3693; // non-reflected ECMA-182
 
     // Folding constants derived from the polynomial at startup (see CrcFolding).
+#if NET8_0_OR_GREATER
     private static readonly Vector128<ulong> Fold512 = Vector128.Create(
         CrcFolding.XPowModP(512 + 64 - 1, PolyNormal, 64),
         CrcFolding.XPowModP(512 + 64 - 65, PolyNormal, 64));
     private static readonly Vector128<ulong> Fold128 = Vector128.Create(
         CrcFolding.XPowModP(128 + 64 - 1, PolyNormal, 64),
         CrcFolding.XPowModP(128 + 64 - 65, PolyNormal, 64));
+#endif
     // 8 tables of 256 entries, flattened: Table[k * 256 + v] is the CRC of
     // byte v followed by k zero bytes. Table[0..256) is the classic table.
     private static readonly ulong[] Table = CreateTable();
@@ -90,10 +99,14 @@ internal static class Crc64
     public static ulong Compute(ReadOnlySpan<byte> data, ulong crc = 0)
     {
         crc = ~crc;
+#if NET8_0_OR_GREATER
         if (CrcFolding.IsSupported && data.Length >= 64)
             crc = UpdateClmul(data, crc);
         else
             crc = UpdateScalar(data, crc);
+#else
+        crc = UpdateScalar(data, crc);
+#endif
         return ~crc;
     }
 
@@ -132,6 +145,7 @@ internal static class Crc64
         return crc;
     }
 
+#if NET8_0_OR_GREATER
     private static ulong UpdateClmul(ReadOnlySpan<byte> data, ulong crc)
     {
         ref byte src = ref MemoryMarshal.GetReference(data);
@@ -187,6 +201,7 @@ internal static class Crc64
              ^ ArmAes.PolynomialMultiplyWideningUpper(acc, k)
              ^ data;
     }
+#endif
 
     /// <summary>
     /// Computes CRC64 and writes it as 8 little-endian bytes.

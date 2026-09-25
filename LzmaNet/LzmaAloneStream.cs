@@ -4,6 +4,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Runtime.ExceptionServices;
 
+using LzmaNet.Compatibility;
 using LzmaNet.Lzma;
 using LzmaNet.RangeCoder;
 
@@ -79,7 +80,7 @@ public sealed class LzmaAloneCompressStream : Stream
     /// a single array before encoding, so the limit is the longest array the
     /// runtime allows. Use <see cref="XzCompressStream"/> for larger inputs.
     /// </summary>
-    public static int MaxInputSize => Array.MaxLength;
+    public static int MaxInputSize => Portable.ArrayMaxLength;
 
     /// <summary>
     /// Throws when the input would grow past <see cref="MaxInputSize"/>. Checked
@@ -99,7 +100,7 @@ public sealed class LzmaAloneCompressStream : Stream
     /// <see cref="MaxInputSize"/>.</exception>
     public override void Write(ReadOnlySpan<byte> buffer)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        Portable.ThrowIfDisposed(_disposed, this);
         if (_finished)
             throw new InvalidOperationException("Stream has been finalized.");
         EnsureWithinInputLimit(_inputBuffer.Length, buffer.Length);
@@ -229,7 +230,7 @@ public sealed class LzmaAloneDecompressStream : Stream
     /// <inheritdoc/>
     public override int Read(Span<byte> buffer)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        Portable.ThrowIfDisposed(_disposed, this);
         EnsureDecoded();
 
         int toCopy = Math.Min(buffer.Length, _outputLength - _outputPos);
@@ -372,15 +373,15 @@ public sealed class LzmaAloneDecompressStream : Stream
             return 0;
 
         long remaining = stream.Length - stream.Position;
-        return remaining > 0 && remaining <= Array.MaxLength ? (int)remaining : 0;
+        return remaining > 0 && remaining <= Portable.ArrayMaxLength ? (int)remaining : 0;
     }
 
     /// <summary>
     /// Largest output buffer an unknown-size decode can grow to. ArrayPool serves
     /// requests this large by allocating directly, and the runtime refuses any
-    /// array longer than <see cref="Array.MaxLength"/>.
+    /// array longer than <see cref="Portable.ArrayMaxLength"/>.
     /// </summary>
-    internal static int MaxOutputCapacity => Array.MaxLength;
+    internal static int MaxOutputCapacity => Portable.ArrayMaxLength;
 
     /// <summary>
     /// Next capacity for the growing unknown-size output buffer: double, but

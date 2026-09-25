@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: 0BSD
 
+using LzmaNet.Compatibility;
 using LzmaNet.LZ;
 using LzmaNet.RangeCoder;
 
@@ -617,7 +618,7 @@ internal sealed class LzmaEncoder : IDisposable
         if (++_priceGeneration == 0)
         {
             // Wrapped: stamps would compare equal to the new generation.
-            Array.Clear(_lenPriceStamp!);
+            Portable.Clear(_lenPriceStamp!);
             _priceGeneration = 1;
         }
     }

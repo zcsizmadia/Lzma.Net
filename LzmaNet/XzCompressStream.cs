@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: 0BSD
 
+using LzmaNet.Compatibility;
 using LzmaNet.Lzma;
 using LzmaNet.Lzma2;
 using LzmaNet.Xz;
@@ -100,7 +101,7 @@ public sealed class XzCompressStream : Stream
     /// <inheritdoc/>
     public override void Write(ReadOnlySpan<byte> buffer)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        Portable.ThrowIfDisposed(_disposed, this);
         if (_finished)
             throw new InvalidOperationException("Stream has been finalized.");
 
@@ -131,14 +132,14 @@ public sealed class XzCompressStream : Stream
     /// <inheritdoc/>
     public override void Flush()
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        Portable.ThrowIfDisposed(_disposed, this);
         _baseStream.Flush();
     }
 
     /// <inheritdoc/>
     public override async Task FlushAsync(CancellationToken cancellationToken)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        Portable.ThrowIfDisposed(_disposed, this);
         await _baseStream.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -153,7 +154,7 @@ public sealed class XzCompressStream : Stream
     public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer,
         CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        Portable.ThrowIfDisposed(_disposed, this);
         if (_finished)
             throw new InvalidOperationException("Stream has been finalized.");
 
