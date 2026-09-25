@@ -47,6 +47,7 @@ LzmaNet/                          # Main library
 LzmaNet.Tests/                    # TUnit tests
 LzmaNet.Tests.Portable20/         # Same tests, run against the netstandard2.0 asset
 LzmaNet.Tests.Portable21/         # Same tests, run against the netstandard2.1 asset
+LzmaNet.Tests.NetFx/              # Targeted suite on .NET Framework (not in the solution)
 LzmaNet.Benchmark/                # Benchmark (not in solution, net10.0 only)
 ```
 
@@ -133,6 +134,31 @@ the netstandard2.0 run. That build cannot see `Stream.ReadAsync(Memory<byte>, �
 and calls the `byte[]` overload, whose .NET default ends in a synchronous read —
 visible only because the test host runs that asset on .NET 10. Real consumers of
 it are on .NET Framework, where the array overload is itself the async path.
+
+`LzmaNet.Tests.NetFx` runs a targeted suite on .NET Framework 4.7.2, which is
+what the netstandard2.0 asset actually ships to — the Portable20 project runs
+that same asset on .NET 10, a different BCL. It is **not** in the solution,
+because net472 cannot run on the Linux and macOS CI jobs; the
+`test (.NET Framework)` workflow job invokes it, and locally:
+
+```shell
+dotnet test LzmaNet.Tests.NetFx/LzmaNet.Tests.NetFx.csproj -c Release
+```
+
+It is a focused suite rather than the shared sources: those are written against
+`Array.Fill`, `Array.MaxLength`, span `Stream.Write` and `Process.WaitForExitAsync`,
+so compiling them for net472 would need a second compat layer running through
+shared test code. Instead each test drives one shim through the public API.
+Nothing needs installing — Windows ships the 4.8 runtime, and
+`Microsoft.NETFramework.ReferenceAssemblies` supplies the reference assemblies,
+so the project builds even where no targeting pack exists. TUnit needs one
+shim of its own (`ModuleInitializerAttribute`, in `Shims.cs`).
+
+Known limit, measured rather than assumed: breaking `BitOperations.TrailingZeroCount`
+so the error survives the caller's `>> 3` fails two of these tests, but returning
+half from `RoundUpToPowerOf2` does not fail any — preset dictionary sizes are
+already powers of two, so that member is close to inert. Do not read a green run
+as proof that every shim is exercised.
 
 ### Adding a new target
 
