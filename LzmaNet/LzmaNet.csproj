@@ -17,7 +17,7 @@
     <RepositoryUrl>https://github.com/zcsizmadia/Lzma.Net.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>Initial release. Pure C# port of XZ Utils 5.8.4 with LZMA/LZMA2/XZ compression, BCJ/Delta filters, multi-threaded compression, and streaming APIs.</PackageReleaseNotes>
+    <PackageReleaseNotes>5.8.4.3: the assembly is strong-named (public key token d7402a10f552e93b), so strong-named assemblies and .NET Framework applications can reference it without warning CS8002. No API or behavior changes. On .NET Framework, code compiled against an earlier, unsigned version must be recompiled, because the assembly identity changed.</PackageReleaseNotes>
   </PropertyGroup>
 
   <ItemGroup>
@@ -40,11 +40,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <InternalsVisibleTo Include="LzmaNet.Tests" />
-    <InternalsVisibleTo Include="LzmaNet.Tests.Portable20" />
-    <InternalsVisibleTo Include="LzmaNet.Tests.Portable21" />
-    <InternalsVisibleTo Include="LzmaNet.Tests.NetFx" />
-    <InternalsVisibleTo Include="LzmaNet.Benchmark" />
+    <InternalsVisibleTo Include="LzmaNet.Tests" Key="$(LzmaNetPublicKey)" />
+    <InternalsVisibleTo Include="LzmaNet.Tests.Portable20" Key="$(LzmaNetPublicKey)" />
+    <InternalsVisibleTo Include="LzmaNet.Tests.Portable21" Key="$(LzmaNetPublicKey)" />
+    <InternalsVisibleTo Include="LzmaNet.Tests.NetFx" Key="$(LzmaNetPublicKey)" />
+    <InternalsVisibleTo Include="LzmaNet.Benchmark" Key="$(LzmaNetPublicKey)" />
   </ItemGroup>
 
 </Project>
