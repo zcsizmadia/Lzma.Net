@@ -1,7 +1,7 @@
 <Project>
 
   <PropertyGroup>
-    <Version>5.8.4.2</Version>
+    <Version>5.8.4.3</Version>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -31,6 +31,17 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <!-- Strong naming, so strong-named assemblies (and .NET Framework applications) can reference LzmaNet. The key
+       pair is committed on purpose, as is common for open-source libraries: it gives the assembly a stable
+       identity, not security. Every project is signed, because the library grants the tests and the benchmark
+       access to its internals, which requires their public key. -->
+  <PropertyGroup>
+    <SignAssembly>true</SignAssembly>
+    <AssemblyOriginatorKeyFile>$(MSBuildThisFileDirectory)LzmaNet.snk</AssemblyOriginatorKeyFile>
+    <!-- The public key of LzmaNet.snk (token d7402a10f552e93b), for InternalsVisibleTo. -->
+    <LzmaNetPublicKey>00240000048000009400000006020000002400005253413100040000010001009d465db98282cf98f3d949ce7bfdfaa7ddacd165a820fc196588179a596c0b0bf1bed960234506a59252ae43fd68c020b859cf4b041663046e913126ef403a287c358a24b13e5131ccd0fd2c0474557c0a6fd600d6af18ec923c7b6facf0a95dad0a57498949a0e6806698e6525c362011008b4d3a2893a9f30229cf1d000af9</LzmaNetPublicKey>
   </PropertyGroup>
 
 </Project>
