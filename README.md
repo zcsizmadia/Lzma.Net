@@ -35,18 +35,18 @@ A **native C# implementation** of the XZ/LZMA2/LZMA compression format. No nativ
 
 See [BENCHMARK.md](BENCHMARK.md) for the full methodology and results across real-world, synthetic, and incompressible data.
 
-Quick summary — [Silesia corpus](https://sun.aei.polsl.pl/~sdeor/index.php?page=silesia) (211.9 MB real-world mix), medians of repeated runs, percentages relative to the native `xz` CLI at the same preset and thread count. Decompression is measured on identical xz-produced input files, byte-verified:
+Quick summary — [Silesia corpus](https://sun.aei.polsl.pl/~sdeor/index.php?page=silesia) (211.9 MB real-world mix) on Linux (one socket of an AMD EPYC 7543, 64 threads; native xz 5.8.4), medians of repeated runs, percentages relative to the native `xz` CLI at the same preset and thread count. Decompression is measured on identical xz-produced input files, byte-verified (single-block at 1 thread, multi-block at 64 threads):
 
 | | Compress | % of xz | Decompress | % of xz | Ratio |
 |---|---:|---:|---:|---:|---:|
-| **LzmaNet** (preset 6, 1 thread) | 4.7 MB/s | 174% | 80.1 MB/s | 102% | 27.0% |
-| **LzmaNet** (preset 6, 20 threads) | 17.0 MB/s | 140% | 369.0 MB/s | 222% | 27.0% |
-| **LzmaNet** (preset 9, optimal parser) | 1.6 MB/s | 67% | — | — | **23.0%** |
-| xz CLI (preset 6, 1 thread) — *baseline* | 2.7 MB/s | 100% | 78.8 MB/s | 100% | 23.2% |
-| xz CLI (preset 6, 20 threads) — *baseline* | 12.1 MB/s | 100% | 165.9 MB/s | 100% | 23.4% |
-| xz CLI (-9, 1 thread) — *baseline* | 2.4 MB/s | 100% | — | — | 23.0% |
+| **LzmaNet** (preset 6, 1 thread) | 7.1 MB/s | 209% | 64.1 MB/s | 48% | 27.0% |
+| **LzmaNet** (preset 6, 64 threads) | 41.6 MB/s | 191% | 714.1 MB/s | 54% | 27.0% |
+| **LzmaNet** (preset 9, optimal parser) | 2.5 MB/s | 86% | — | — | **23.1%** |
+| xz CLI (preset 6, 1 thread) — *baseline* | 3.4 MB/s | 100% | 133.7 MB/s | 100% | 23.2% |
+| xz CLI (preset 6, 64 threads) — *baseline* | 21.8 MB/s | 100% | 1,326.7 MB/s | 100% | 23.4% |
+| xz CLI (-9, 1 thread) — *baseline* | 2.9 MB/s | 100% | — | — | 23.0% |
 
-At the default preset, LzmaNet compresses ~1.7× faster than native xz and decodes at native speed single-threaded (2.2× with parallel block decode of multi-block streams). At preset 9 — BT4 match finder with price-based optimal parsing, the same architecture as xz's high presets — LzmaNet **matches `xz -9`'s compression ratio** (within 0.2% of its output size) at ~two-thirds of its speed.
+At the default preset, LzmaNet compresses ~2× faster than native xz; native xz decodes about twice as fast. At preset 9 — BT4 match finder with price-based optimal parsing, the same architecture as xz's high presets — LzmaNet **matches `xz -9`'s compression ratio** (within 0.23% of its output size) at ~85% of its speed.
 
 ## Installation
 
