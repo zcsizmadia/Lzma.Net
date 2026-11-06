@@ -58,7 +58,7 @@ internal abstract class SlidingWindowMatchFinder : IMatchFinder
 
     private bool _disposed;
 
-    protected SlidingWindowMatchFinder(int dictSize, int matchMaxLen, int cutValue)
+    protected SlidingWindowMatchFinder(int dictSize, int matchMaxLen, int cutValue, int hashBits)
     {
         _windowSize = Math.Max(dictSize, 2);
         _cyclicBufferSize = (int)BitOperations.RoundUpToPowerOf2((uint)_windowSize);
@@ -66,7 +66,7 @@ internal abstract class SlidingWindowMatchFinder : IMatchFinder
         _matchMaxLen = matchMaxLen;
         _cutValue = cutValue;
 
-        _hashMask = (1 << LzHash.HashBits(dictSize)) - 1;
+        _hashMask = (1 << hashBits) - 1;
         int hashSize = LzHash.TableSize(_hashMask);
         _hash = ArrayPool<int>.Shared.Rent(hashSize);
         Portable.Fill(_hash, -1, 0, hashSize);

@@ -4,6 +4,15 @@ using LzmaNet.Compatibility;
 using LzmaNet.LZ;
 using LzmaNet.RangeCoder;
 
+using System.Runtime.CompilerServices;
+#if NET8_0_OR_GREATER
+using System.Runtime.InteropServices;
+#else
+// netstandard has no MemoryMarshal.GetArrayDataReference; see
+// Compatibility/MemoryMarshal.cs.
+using MemoryMarshal = LzmaNet.Compatibility.MemoryMarshal;
+#endif
+
 namespace LzmaNet.Lzma;
 
 /// <summary>
@@ -586,11 +595,33 @@ internal sealed class LzmaEncoder : IDisposable
     // length-coder probabilities — and therefore these prices — are fixed for
     // its duration. Each price is computed once per window instead of once per
     // edge, which is where the parser spent most of its time.
+    //
+    // Prices are filled per row: a (coder, posState) row holds the prices of
+    // lengths 2..N, and _lenRowFilled records how far it is valid in the
+    // current window. A relaxation asks for the whole length range it is about
+    // to walk once, then reads the row directly — the inner loops carry no
+    // per-length validity check.
+    //
+    // Distance prices are cached the same way, and for the same reason: the
+    // slot, footer and align probabilities cannot change during a window. A
+    // distance's price is slot price (per lenToPosState and slot) + footer
+    // (reverse bit tree for dist < kNumFullDistances, otherwise direct bits +
+    // align bits), each piece cached on first use.
     private const int kLenPriceCoders = 2;   // 0 = match lengths, 1 = rep lengths
     private const int kLenPriceMatch = 0;
     private const int kLenPriceRep = 1;
-    private uint[]? _lenPrice;
-    private uint[]? _lenPriceStamp;
+    private const int kLenRows = kLenPriceCoders * LzmaConstants.kNumPosStatesMax;
+    private uint[]? _lenPrice;               // [row * kNumLenSymbols + (len - 2)]
+    private int[]? _lenRowFilled;            // lengths 2.._lenRowFilled[row] are valid...
+    private uint[]? _lenRowStamp;            // ...when the row's stamp is the current generation
+
+    private uint[]? _slotPrice;              // [lenToPosState * kNumPosSlots + slot]
+    private uint[]? _slotPriceStamp;
+    private uint[]? _footerPrice;            // [dist], dist < kNumFullDistances
+    private uint[]? _footerPriceStamp;
+    private uint[]? _alignPrice;             // [dist & kAlignMask]
+    private uint[]? _alignPriceStamp;
+
     private uint _priceGeneration = 1;       // 0 is the "never filled" stamp
 
     private void EnsureOptBuffers()
@@ -604,40 +635,99 @@ internal sealed class LzmaEncoder : IDisposable
         _optOpsLen = new int[kNumOpts];
         _optOpsBack = new int[kNumOpts];
 
-        int lenPriceSize = kLenPriceCoders * LzmaConstants.kNumPosStatesMax * LzmaConstants.kNumLenSymbols;
-        _lenPrice = new uint[lenPriceSize];
-        _lenPriceStamp = new uint[lenPriceSize];
+        _lenPrice = new uint[kLenRows * LzmaConstants.kNumLenSymbols];
+        _lenRowFilled = new int[kLenRows];
+        _lenRowStamp = new uint[kLenRows];
+
+        _slotPrice = new uint[LzmaConstants.kPosSlotCoderSize];
+        _slotPriceStamp = new uint[LzmaConstants.kPosSlotCoderSize];
+        _footerPrice = new uint[LzmaConstants.kNumFullDistances];
+        _footerPriceStamp = new uint[LzmaConstants.kNumFullDistances];
+        _alignPrice = new uint[LzmaConstants.kAlignTableSize];
+        _alignPriceStamp = new uint[LzmaConstants.kAlignTableSize];
     }
 
     /// <summary>
-    /// Starts a new pricing window, invalidating every cached length price
-    /// without touching the table.
+    /// Starts a new pricing window, invalidating every cached price without
+    /// touching the tables.
     /// </summary>
     private void BeginPricingWindow()
     {
         if (++_priceGeneration == 0)
         {
             // Wrapped: stamps would compare equal to the new generation.
-            Portable.Clear(_lenPriceStamp!);
+            Portable.Clear(_lenRowStamp!);
+            Portable.Clear(_slotPriceStamp!);
+            Portable.Clear(_footerPriceStamp!);
+            Portable.Clear(_alignPriceStamp!);
             _priceGeneration = 1;
         }
     }
 
     /// <summary>
-    /// Length price for the current window, computed on first use.
+    /// Makes lengths 2..<paramref name="maxLen"/> of a length-price row valid
+    /// for the current window and returns the row's base index in
+    /// <see cref="_lenPrice"/> (offset by -2, so <c>base + len</c> indexes it).
     /// </summary>
-    private uint PriceLenCached(ushort[] lenProbs, int coder, int posState, int len)
+    private int EnsureLenPrices(ushort[] lenProbs, int coder, int posState, int maxLen)
     {
-        int index = ((coder << LzmaConstants.kNumPosStatesBitsMax) + posState)
-                        * LzmaConstants.kNumLenSymbols
-                    + (len - LzmaConstants.kMatchMinLen);
+        int row = (coder << LzmaConstants.kNumPosStatesBitsMax) + posState;
+        int rowBase = row * LzmaConstants.kNumLenSymbols - LzmaConstants.kMatchMinLen;
+        int filled = _lenRowStamp![row] == _priceGeneration
+            ? _lenRowFilled![row]
+            : LzmaConstants.kMatchMinLen - 1;
 
-        if (_lenPriceStamp![index] != _priceGeneration)
+        if (filled < maxLen)
         {
-            _lenPrice![index] = PriceLen(lenProbs, posState, len);
-            _lenPriceStamp[index] = _priceGeneration;
+            uint[] prices = _lenPrice!;
+            for (int len = filled + 1; len <= maxLen; len++)
+                prices[rowBase + len] = PriceLen(lenProbs, posState, len);
+            _lenRowFilled![row] = maxLen;
+            _lenRowStamp[row] = _priceGeneration;
         }
-        return _lenPrice![index];
+        return rowBase;
+    }
+
+    /// <summary>
+    /// Price of distance <paramref name="dist"/> (slot + footer) for a match
+    /// whose length maps to <paramref name="lenToPosState"/>, from the current
+    /// window's caches.
+    /// </summary>
+    private uint PriceDistCached(int lenToPosState, int dist)
+    {
+        uint gen = _priceGeneration;
+        int slot = GetPosSlot((uint)dist);
+
+        int s = lenToPosState * LzmaConstants.kNumPosSlots + slot;
+        if (_slotPriceStamp![s] != gen)
+        {
+            _slotPrice![s] = Price.GetBitTreePrice(_posSlotCoders,
+                lenToPosState * LzmaConstants.kNumPosSlots, LzmaConstants.kNumPosSlotBits, (uint)slot);
+            _slotPriceStamp[s] = gen;
+        }
+        uint price = _slotPrice![s];
+
+        if (dist < LzmaConstants.kNumFullDistances)
+        {
+            if (_footerPriceStamp![dist] != gen)
+            {
+                _footerPrice![dist] = PriceDistFooter(dist);
+                _footerPriceStamp[dist] = gen;
+            }
+            return price + _footerPrice![dist];
+        }
+
+        int a = dist & (int)LzmaConstants.kAlignMask;
+        if (_alignPriceStamp![a] != gen)
+        {
+            _alignPrice![a] = Price.GetReverseBitTreePrice(_alignProbs, 0,
+                LzmaConstants.kNumAlignBits, (uint)a);
+            _alignPriceStamp[a] = gen;
+        }
+        int numDirectBits = (slot >> 1) - 1;
+        return price
+             + Price.GetDirectBitsPrice(numDirectBits - LzmaConstants.kNumAlignBits)
+             + _alignPrice![a];
     }
 
     private int GatherMatches(int cur)
@@ -905,20 +995,33 @@ internal sealed class LzmaEncoder : IDisposable
 
         // Rep matches (all lengths)
         var reps = new RepDistances(from.Rep0, from.Rep1, from.Rep2, from.Rep3);
+        // Both inner loops index only cur + len <= cap < kNumOpts and length rows
+        // filled up to the length they walk, so they skip the bounds checks.
+        ref uint lenPriceRef = ref MemoryMarshal.GetArrayDataReference(_lenPrice!);
+        ref OptNode optRef = ref MemoryMarshal.GetArrayDataReference(opt);
         for (int i = 0; i < 4; i++)
         {
-            int repLen = GetRepMatchLen(block, absPos, reps[i], maxLen);
+            // Two-byte pre-check (as liblzma does) before the full compare:
+            // most reps do not match here at all.
+            int repDist = reps[i];
+            int src = absPos - repDist - 1;
+            if (repDist < 0 || src < 0
+                || block[src] != block[absPos] || block[src + 1] != block[absPos + 1])
+                continue;
+
+            int repLen = GetRepMatchLen(block, absPos, repDist, maxLen);
             if (repLen < LzmaConstants.kMatchMinLen)
                 continue;
 
             uint prefix = priceRep + PriceRepIndexBits(i, state, posState);
             int newState = LzmaConstants.StateUpdateLongRep(state);
             var afterRep = reps.AfterRepMatch(i);
+            int rowBase = EnsureLenPrices(_repLenProbs, kLenPriceRep, posState, repLen);
 
             for (int len = LzmaConstants.kMatchMinLen; len <= repLen; len++)
             {
-                uint p = prefix + PriceLenCached(_repLenProbs, kLenPriceRep, posState, len);
-                ref OptNode to = ref opt[cur + len];
+                uint p = prefix + Unsafe.Add(ref lenPriceRef, rowBase + len);
+                ref OptNode to = ref Unsafe.Add(ref optRef, cur + len);
                 if (p < to.Price)
                 {
                     to.Price = p;
@@ -943,7 +1046,16 @@ internal sealed class LzmaEncoder : IDisposable
         int newStateMatch = LzmaConstants.StateUpdateMatch(state);
         int strideBase = cur * (LzmaConstants.kMatchMaxLen + 1);
         int startLen = LzmaConstants.kMatchMinLen;
-        Span<uint> slotPrice = stackalloc uint[LzmaConstants.kNumLenToPosStates];
+
+        // Fill the match-length prices once for the longest length any
+        // candidate will price.
+        int longest = 0;
+        for (int k = 0; k < count; k++)
+            longest = Math.Max(longest, _optMatchLen![strideBase + k]);
+        longest = Math.Min(longest, maxLen);
+        int matchRowBase = longest >= startLen
+            ? EnsureLenPrices(_matchLenProbs, kLenPriceMatch, posState, longest)
+            : 0;
 
         for (int k = 0; k < count; k++)
         {
@@ -952,21 +1064,20 @@ internal sealed class LzmaEncoder : IDisposable
             if (candLen < startLen)
                 continue;
 
-            // Distance footer price is length-independent; the slot-tree price
-            // depends only on lenToPosState (4 values), cached lazily.
-            uint footer = PriceDistFooter(dist);
             var afterMatch = reps.AfterMatch(dist);
-            slotPrice.Fill(kInfinityPrice);
+
+            // The distance price depends on the length only through
+            // lenToPosState, which is constant from length 5 up.
+            uint distPriceLong = PriceDistCached(LzmaConstants.kNumLenToPosStates - 1, dist);
 
             for (int len = startLen; len <= candLen; len++)
             {
-                int lps = LzmaConstants.GetLenToPosState(len);
-                if (slotPrice[lps] == kInfinityPrice)
-                    slotPrice[lps] = PriceDistSlot(lps, dist);
+                uint distPrice = len < LzmaConstants.kMatchMinLen + LzmaConstants.kNumLenToPosStates - 1
+                    ? PriceDistCached(LzmaConstants.GetLenToPosState(len), dist)
+                    : distPriceLong;
 
-                uint p = priceMatch + PriceLenCached(_matchLenProbs, kLenPriceMatch, posState, len)
-                       + slotPrice[lps] + footer;
-                ref OptNode to = ref opt[cur + len];
+                uint p = priceMatch + Unsafe.Add(ref lenPriceRef, matchRowBase + len) + distPrice;
+                ref OptNode to = ref Unsafe.Add(ref optRef, cur + len);
                 if (p < to.Price)
                 {
                     to.Price = p;
@@ -1063,13 +1174,6 @@ internal sealed class LzmaEncoder : IDisposable
             return price + Price.GetPrice0(_isRepG1[state]);
         price += Price.GetPrice1(_isRepG1[state]);
         return price + Price.GetPrice(_isRepG2[state], (uint)(repIndex == 3 ? 1 : 0));
-    }
-
-    private uint PriceDistSlot(int lenToPosState, int dist)
-    {
-        int slot = GetPosSlot((uint)dist);
-        return Price.GetBitTreePrice(_posSlotCoders, lenToPosState * LzmaConstants.kNumPosSlots,
-            LzmaConstants.kNumPosSlotBits, (uint)slot);
     }
 
     private uint PriceDistFooter(int dist)
