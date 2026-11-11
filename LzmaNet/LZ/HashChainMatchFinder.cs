@@ -20,7 +20,7 @@ internal sealed class HashChainMatchFinder : SlidingWindowMatchFinder
     private int[] _chain;
 
     public HashChainMatchFinder(int dictSize, int matchMaxLen, int cutValue)
-        : base(dictSize, matchMaxLen, cutValue)
+        : base(dictSize, matchMaxLen, cutValue, LzHash.HashBits(dictSize))
     {
         _chain = ArrayPool<int>.Shared.Rent(_cyclicBufferSize);
         Portable.Fill(_chain, -1, 0, _cyclicBufferSize);
