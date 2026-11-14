@@ -628,6 +628,26 @@ internal sealed class LzmaEncoder : IDisposable
     // compressed size.
 
     private const int kNumOpts = 1 << 10;
+
+    // Highest node index reset to unreached in the current window; nodes past
+    // it still hold the previous window's values and must not be read.
+    private int _optResetEnd;
+
+    /// <summary>
+    /// Makes nodes up to <paramref name="last"/> valid (unreached) before an
+    /// edge may relax into them. Every node at or below lenEnd has been
+    /// reached by some edge, so it is always within the reset range.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void EnsureOptReset(OptNode[] opt, int last)
+    {
+        if (last > _optResetEnd)
+        {
+            for (int i = _optResetEnd + 1; i <= last; i++)
+                opt[i].Price = kInfinityPrice;
+            _optResetEnd = last;
+        }
+    }
     private const uint kInfinityPrice = uint.MaxValue;
 
     private struct OptNode
@@ -867,8 +887,11 @@ internal sealed class LzmaEncoder : IDisposable
 
             // ---- Dynamic program over the window ----
             int cap = Math.Min(kNumOpts - 1, chunkEnd - pos);
-            for (int i = 1; i <= cap; i++)
-                opt[i].Price = kInfinityPrice;
+            // Nodes are reset to "unreached" only as far as edges reach (see
+            // EnsureOptReset), not across the whole window up front: windows
+            // are often a few dozen positions long, and clearing all 1023 nodes
+            // for each one was a measurable share of encoding at nice_len 16.
+            _optResetEnd = 0;
             opt[0] = new OptNode
             {
                 Price = 0,
@@ -1014,6 +1037,7 @@ internal sealed class LzmaEncoder : IDisposable
         // Literal
         if (cur + 1 <= cap)
         {
+            EnsureOptReset(opt, cur + 1); // also covers the short rep below
             uint litPrice = price0 + PriceLiteral(block, absPos, state, from.Rep0);
             ref OptNode to = ref opt[cur + 1];
             if (litPrice < to.Price)
@@ -1068,6 +1092,7 @@ internal sealed class LzmaEncoder : IDisposable
             if (repLen < LzmaConstants.kMatchMinLen)
                 continue;
 
+            EnsureOptReset(opt, cur + repLen);
             uint prefix = priceRep + PriceRepIndexBits(i, state, posState);
             int rowBase = EnsureLenPrices(_repLenProbs, kLenPriceRep, posState, repLen);
 
@@ -1100,6 +1125,7 @@ internal sealed class LzmaEncoder : IDisposable
         for (int k = 0; k < count; k++)
             longest = Math.Max(longest, _optMatchLen![strideBase + k]);
         longest = Math.Min(longest, maxLen);
+        EnsureOptReset(opt, cur + longest);
         int matchRowBase = longest >= startLen
             ? EnsureLenPrices(_matchLenProbs, kLenPriceMatch, posState, longest)
             : 0;

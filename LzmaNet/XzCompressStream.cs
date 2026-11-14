@@ -115,12 +115,13 @@ public sealed class XzCompressStream : Stream
 
         EnsureHeader();
 
+        CompactInput();
         _inputBuffer.Write(buffer);
 
         // Flush blocks when buffer exceeds block size
         if (_threads == 1)
         {
-            while (_inputBuffer.Length >= _blockSize)
+            while (PendingInput >= _blockSize)
             {
                 FlushBlock();
             }
@@ -130,7 +131,7 @@ public sealed class XzCompressStream : Stream
             // Pipeline: start encoding each block as soon as it is complete;
             // the in-flight bound blocks on (and writes out) the oldest block,
             // overlapping writing with encoding.
-            while (_inputBuffer.Length >= _blockSize)
+            while (PendingInput >= _blockSize)
             {
                 EnqueueBlock();
             }
@@ -173,18 +174,19 @@ public sealed class XzCompressStream : Stream
 
         await EnsureHeaderAsync(cancellationToken).ConfigureAwait(false);
 
+        CompactInput();
         _inputBuffer.Write(buffer.Span);
 
         if (_threads == 1)
         {
-            while (_inputBuffer.Length >= _blockSize)
+            while (PendingInput >= _blockSize)
             {
                 await FlushBlockAsync(cancellationToken).ConfigureAwait(false);
             }
         }
         else
         {
-            while (_inputBuffer.Length >= _blockSize)
+            while (PendingInput >= _blockSize)
             {
                 await EnqueueBlockAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -215,12 +217,12 @@ public sealed class XzCompressStream : Stream
 
     private void FlushBlock()
     {
-        if (_inputBuffer.Length == 0) return;
+        if (PendingInput == 0) return;
 
         // Flush at most one block's worth of data so BlockSize is honored
         // (blocks are the unit of parallel decompression and random access).
-        int len = (int)Math.Min(_inputBuffer.Length, _blockSize);
-        var data = _inputBuffer.GetBuffer().AsMemory(0, len);
+        int len = Math.Min(PendingInput, _blockSize);
+        var data = _inputBuffer.GetBuffer().AsMemory(_inputStart, len);
 
         var (unpaddedSize, uncompressedSize) = XzBlock.WriteBlock(
             _baseStream, data, EncoderForBlock(PropsForBlock(len)),
@@ -233,10 +235,10 @@ public sealed class XzCompressStream : Stream
 
     private async Task FlushBlockAsync(CancellationToken cancellationToken)
     {
-        if (_inputBuffer.Length == 0) return;
+        if (PendingInput == 0) return;
 
-        int len = (int)Math.Min(_inputBuffer.Length, _blockSize);
-        var data = _inputBuffer.GetBuffer().AsMemory(0, len);
+        int len = Math.Min(PendingInput, _blockSize);
+        var data = _inputBuffer.GetBuffer().AsMemory(_inputStart, len);
 
         var (unpaddedSize, uncompressedSize) = await XzBlock.WriteBlockAsync(
             _baseStream, data, EncoderForBlock(PropsForBlock(len)),
@@ -292,14 +294,38 @@ public sealed class XzCompressStream : Stream
         _progress?.Report(_totalUncompressed);
     }
 
+    // Start of the unconsumed input in _inputBuffer. Blocks are consumed by
+    // advancing it rather than by moving the rest of the buffer down, which
+    // was quadratic for a large write (Compress on 212 MB at preset 0, with
+    // 1 MB blocks, moved ~20 GB); the leftover is compacted on the next write.
+    private int _inputStart;
+
+    private int PendingInput => (int)_inputBuffer.Length - _inputStart;
+
     private void ShiftInputBuffer(int consumed)
     {
+        _inputStart += consumed;
+        if (_inputStart == _inputBuffer.Length)
+        {
+            _inputBuffer.SetLength(0);
+            _inputStart = 0;
+        }
+    }
+
+    /// <summary>
+    /// Moves the unconsumed input (less than one block after a write's block
+    /// loop) to the start of the buffer before more is appended.
+    /// </summary>
+    private void CompactInput()
+    {
+        if (_inputStart == 0)
+            return;
+        int remaining = PendingInput;
         var buffer = _inputBuffer.GetBuffer();
-        int remaining = (int)_inputBuffer.Length - consumed;
-        if (remaining > 0)
-            Buffer.BlockCopy(buffer, consumed, buffer, 0, remaining);
+        Buffer.BlockCopy(buffer, _inputStart, buffer, 0, remaining);
         _inputBuffer.SetLength(remaining);
         _inputBuffer.Position = remaining;
+        _inputStart = 0;
     }
 
     // ── Multi-threaded pipeline ─────────────────────────────────────
@@ -316,9 +342,9 @@ public sealed class XzCompressStream : Stream
 
     private Task<EncodedBlock> StartBlockEncode()
     {
-        int len = (int)Math.Min(_inputBuffer.Length, _blockSize);
+        int len = Math.Min(PendingInput, _blockSize);
         byte[] rented = System.Buffers.ArrayPool<byte>.Shared.Rent(len);
-        _inputBuffer.GetBuffer().AsSpan(0, len).CopyTo(rented);
+        _inputBuffer.GetBuffer().AsSpan(_inputStart, len).CopyTo(rented);
         ShiftInputBuffer(len);
 
         var props = PropsForBlock(len);
@@ -392,12 +418,12 @@ public sealed class XzCompressStream : Stream
         // pipeline in order, then write the final partial block.
         if (_threads > 1)
         {
-            while (_inputBuffer.Length >= _blockSize)
+            while (PendingInput >= _blockSize)
                 EnqueueBlock();
             while (_inFlight.Count > 0)
                 CompleteOldestBlock();
         }
-        while (_inputBuffer.Length > 0)
+        while (PendingInput > 0)
             FlushBlock();
 
         // Write index
@@ -422,12 +448,12 @@ public sealed class XzCompressStream : Stream
         // pipeline in order, then write the final partial block.
         if (_threads > 1)
         {
-            while (_inputBuffer.Length >= _blockSize)
+            while (PendingInput >= _blockSize)
                 await EnqueueBlockAsync(cancellationToken).ConfigureAwait(false);
             while (_inFlight.Count > 0)
                 await CompleteOldestBlockAsync(cancellationToken).ConfigureAwait(false);
         }
-        while (_inputBuffer.Length > 0)
+        while (PendingInput > 0)
             await FlushBlockAsync(cancellationToken).ConfigureAwait(false);
 
         // Write index
