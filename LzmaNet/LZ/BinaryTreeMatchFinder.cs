@@ -30,9 +30,25 @@ internal sealed class BinaryTreeMatchFinder : SlidingWindowMatchFinder
 
     private int[] _son; // two entries per slot: [2*slot] = left child, [2*slot+1] = right child
 
-    public BinaryTreeMatchFinder(int dictSize, int matchMaxLen, int cutValue)
+    // Prefix length the tree is searched and ordered on; see FindMatches.
+    private readonly int _treeLimit;
+
+    /// <summary>Smallest <see cref="_treeLimit"/>; see the constructor.</summary>
+    private const int kMinTreeLimit = 64;
+
+    /// <param name="dictSize">Dictionary (window) size.</param>
+    /// <param name="matchMaxLen">Longest match length reported.</param>
+    /// <param name="cutValue">Tree search depth.</param>
+    /// <param name="niceLen">The parser's nice_len. The tree is searched and
+    /// ordered on prefixes of max(<paramref name="niceLen"/>, 64) bytes (see
+    /// <see cref="FindMatches"/>). liblzma uses nice_len itself; on Silesia
+    /// that cost 1.65% size at preset 4 (nice_len 16), while a floor of 64
+    /// costs 0.2-0.3% at every preset and keeps the speedup on repetitive
+    /// data (~2x at presets 4-6).</param>
+    public BinaryTreeMatchFinder(int dictSize, int matchMaxLen, int cutValue, int niceLen = int.MaxValue)
         : base(dictSize, matchMaxLen, cutValue, LzHash.BinaryTreeHashBits(dictSize))
     {
+        _treeLimit = Math.Min(Math.Max(niceLen, kMinTreeLimit), matchMaxLen);
         // Tree nodes are addressed by cyclic slot, so a candidate at delta ==
         // _cyclicBufferSize maps onto the son[] slot pair of the position being
         // inserted: adopting its subtrees would read the new node's own
@@ -78,7 +94,16 @@ internal sealed class BinaryTreeMatchFinder : SlidingWindowMatchFinder
 
         byte[] buffer = _buffer;
         int cur = _pos;
-        int lenLimit = Math.Min(_matchMaxLen, avail);
+        // The tree is searched and ordered on _treeLimit-byte prefixes, as
+        // liblzma does with nice_len: a match reaching the limit ends the walk
+        // (it is long enough for the parser to take outright), and only that
+        // longest match is then extended to its full length (as lzma_mf_find
+        // does). Walking to the full 273 bytes instead made repetitive data,
+        // where such matches are everywhere, encode about 2x slower. The
+        // insertion path (InsertCurrentPos) must use the same limit, or the
+        // tree's ordering, which the len0/len1 shortcut relies on, breaks.
+        int fullLimit = Math.Min(_matchMaxLen, avail);
+        int lenLimit = Math.Min(_treeLimit, fullLimit);
         int matchCount = 0;
 
         LzHash.Compute(buffer, cur, _hashMask, out uint h2, out uint h3, out uint h4);
@@ -128,10 +153,17 @@ internal sealed class BinaryTreeMatchFinder : SlidingWindowMatchFinder
         {
             // Nothing longer can exist; insert into the tree without collecting.
             TreeInsert(curMatch, cur, lenLimit);
-            return matchCount;
+        }
+        else
+        {
+            matchCount = TreeWalk(curMatch, cur, lenLimit, maxLen, distances, lengths, matchCount, maxMatches);
         }
 
-        matchCount = TreeWalk(curMatch, cur, lenLimit, maxLen, distances, lengths, matchCount, maxMatches);
+        if (matchCount > 0 && lengths[matchCount - 1] == lenLimit && lenLimit < fullLimit)
+        {
+            int src = cur - distances[matchCount - 1] - 1;
+            lengths[matchCount - 1] = MatchLength.Common(buffer, src, cur, fullLimit);
+        }
         return matchCount;
     }
 
@@ -330,7 +362,7 @@ internal sealed class BinaryTreeMatchFinder : SlidingWindowMatchFinder
     {
         byte[] buffer = _buffer;
         int cur = _pos;
-        int lenLimit = Math.Min(_matchMaxLen, Available);
+        int lenLimit = Math.Min(_treeLimit, Math.Min(_matchMaxLen, Available));
 
         LzHash.Compute(buffer, cur, _hashMask, out uint h2, out uint h3, out uint h4);
 

@@ -110,7 +110,7 @@ internal sealed class LzmaEncoder : IDisposable
         _repLenProbs = new ushort[lenProbs];
 
         _matchFinder = props.UseBinaryTree
-            ? new BinaryTreeMatchFinder(props.DictionarySize, props.MatchMaxLen, props.CutValue)
+            ? new BinaryTreeMatchFinder(props.DictionarySize, props.MatchMaxLen, props.CutValue, props.NiceLength)
             : new HashChainMatchFinder(props.DictionarySize, props.MatchMaxLen, props.CutValue,
                 props.NiceLength);
 
