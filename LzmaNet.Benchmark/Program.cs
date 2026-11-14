@@ -9,7 +9,9 @@
 //    the 16 MB scenario, where its 24 MiB default block leaves nothing to
 //    parallelize.
 //  - Decompression: cross-decode — all decoders decode the SAME reference
-//    files (one single-block, one multi-block, both produced by the xz CLI),
+//    files (one with xz's default blocks — xz 5.6+ is multi-threaded by
+//    default, so 24 MiB blocks at preset 6 — and one with 1 MiB blocks, both
+//    produced by the xz CLI),
 //    so the decode column measures decoder speed, not encoder output shape.
 //  - Decoded output is verified against the original once per configuration.
 //  - Not measured: peak memory (block-parallel modes hold up to N blocks in
@@ -212,9 +214,9 @@ void RunScenario(string name, byte[] data, int runs, bool xzBlockMatchedRow)
     byte[] refMultiBytes = File.ReadAllBytes(refMulti);
 
     Console.WriteLine();
-    Console.WriteLine($"  DECOMPRESSION — shared references: single-block ({refSingleBytes.Length:N0} B), " +
-                      $"multi-block 1MiB ({refMultiBytes.Length:N0} B), both produced by xz");
-    Console.WriteLine("  | Implementation | Config | Single-block MB/s | Multi-block MB/s |");
+    Console.WriteLine($"  DECOMPRESSION — shared references: xz default blocks ({refSingleBytes.Length:N0} B), " +
+                      $"1 MiB blocks ({refMultiBytes.Length:N0} B), both produced by xz");
+    Console.WriteLine("  | Implementation | Config | Default blocks MB/s | 1 MiB blocks MB/s |");
     Console.WriteLine("  |---|---|---:|---:|");
 
     foreach (int threads in new[] { 1, mt })

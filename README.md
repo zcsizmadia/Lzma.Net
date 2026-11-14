@@ -21,7 +21,7 @@ A **native C# implementation** of the XZ/LZMA2/LZMA compression format. No nativ
 - **Random access** — `XzSeekableStream` seeks anywhere in the uncompressed data and decodes only the blocks it needs, using the XZ index
 - **BCJ/Delta filters** — encode *and* decode support for x86, ARM, ARM64, ARM-Thumb, PowerPC, SPARC, IA-64, RISC-V, and Delta filters; BCJ dramatically improves ratio on executables (`XzCompressOptions.Filter`)
 - **Decompression-bomb protection** — `XzDecompressOptions.MaxOutputSize` rejects oversized output claims before any allocation happens
-- **Presets 0–9** — matching `xz`'s levels: the same dictionary sizes, match finders and parser settings. Presets 0–3 use xz's fast-mode parser over a hash chain; 4–9 use a BT4 match finder with price-based **optimal parsing**, for output within ~1% of `xz` at every level
+- **Presets 0–9** — matching `xz`'s levels: the same dictionary sizes, match finders and parser settings. Presets 0–3 use xz's fast-mode parser over a hash chain; 4–9 use a BT4 match finder with price-based **optimal parsing**, for output within ~1.6% of `xz`'s size at every level
 - **Extreme mode** — equivalent to `xz -e`, spends more CPU time for better compression
 - **Legacy `.lzma` format** — `LzmaAloneCompressStream` / `LzmaAloneDecompressStream` for the LZMA-alone format (7-Zip / `xz --format=lzma` compatible, including unknown-size streams)
 - **Progress reporting** — `IProgress<long>` hooks on both compression and decompression options
@@ -29,24 +29,24 @@ A **native C# implementation** of the XZ/LZMA2/LZMA compression format. No nativ
 - **Concatenated streams** — reads multiple XZ streams appended back-to-back
 - **Zero-copy design** — uses `Span<T>`, `ReadOnlySpan<T>`, `ArrayPool<T>`, and `stackalloc` throughout
 - **SIMD-accelerated** — carry-less-multiply CRC32/CRC64 (PCLMULQDQ on x64, PMULL on ARM64) and vectorized match comparison (AVX2/NEON), with portable fallbacks
-- **.NET 8 / 9 / 10** — multi-target support, plus **netstandard2.0** and **netstandard2.1** builds for older consumers (portable code only: no hardware intrinsics, so it is slower than the .NET 8+ assets)
+- **.NET 8 / 10 / 11** — multi-target support, plus **netstandard2.0** and **netstandard2.1** builds for older consumers (portable code only: no hardware intrinsics, so it is slower than the .NET 8+ assets)
 
 ## Benchmarks
 
 See [BENCHMARK.md](BENCHMARK.md) for the full methodology and results across real-world, synthetic, and incompressible data.
 
-Quick summary — [Silesia corpus](https://sun.aei.polsl.pl/~sdeor/index.php?page=silesia) (211.9 MB real-world mix) on Linux (one socket of an AMD EPYC 7543, 64 threads; native xz 5.8.4), medians of repeated runs, percentages relative to the native `xz` CLI at the same preset and thread count. Decompression is measured on identical xz-produced input files, byte-verified (single-block at 1 thread, multi-block at 64 threads):
+Quick summary — [Silesia corpus](https://sun.aei.polsl.pl/~sdeor/index.php?page=silesia) (211.9 MB real-world mix) on Linux (one socket of an AMD EPYC 7543, 64 threads; native xz 5.8.4; .NET 11), medians of repeated runs, percentages relative to the native `xz` CLI at the same preset and thread count. Decompression is measured on identical xz-produced input files, byte-verified (24 MiB blocks at 1 thread, 1 MiB blocks at 64 threads):
 
 | | Compress | % of xz | Decompress | % of xz | Ratio |
 |---|---:|---:|---:|---:|---:|
-| **LzmaNet** (preset 6, 1 thread) | 7.1 MB/s | 209% | 64.1 MB/s | 48% | 27.0% |
-| **LzmaNet** (preset 6, 64 threads) | 41.6 MB/s | 191% | 714.1 MB/s | 54% | 27.0% |
-| **LzmaNet** (preset 9, optimal parser) | 2.5 MB/s | 86% | — | — | **23.1%** |
-| xz CLI (preset 6, 1 thread) — *baseline* | 3.4 MB/s | 100% | 133.7 MB/s | 100% | 23.2% |
-| xz CLI (preset 6, 64 threads) — *baseline* | 21.8 MB/s | 100% | 1,326.7 MB/s | 100% | 23.4% |
+| **LzmaNet** (preset 6, 1 thread) | 2.8 MB/s | 82% | 106.3 MB/s | 80% | 23.5% |
+| **LzmaNet** (preset 6, 64 threads) | 18.2 MB/s | 83% | **1,832.8 MB/s** | **143%** | 23.5% |
+| **LzmaNet** (preset 9, 1 thread) | 2.4 MB/s | 83% | — | — | 23.1% |
+| xz CLI (preset 6, 1 thread) — *baseline* | 3.4 MB/s | 100% | 133.6 MB/s | 100% | 23.2% |
+| xz CLI (preset 6, 64 threads) — *baseline* | 21.9 MB/s | 100% | 1,284.7 MB/s | 100% | 23.4% |
 | xz CLI (-9, 1 thread) — *baseline* | 2.9 MB/s | 100% | — | — | 23.0% |
 
-At the default preset, LzmaNet compresses ~2× faster than native xz; native xz decodes about twice as fast. At preset 9 — BT4 match finder with price-based optimal parsing, the same architecture as xz's high presets — LzmaNet **matches `xz -9`'s compression ratio** (within 0.23% of its output size) at ~85% of its speed.
+Every preset uses xz's own parameters and architecture (fast-mode parser at 0–3, BT4 + price-based optimal parsing at 4–9), and LzmaNet's output stays within about 1.6% of `xz -N`'s size at every level, at 71–94% of xz's single-threaded compression speed (faster than xz on repetitive data). Native xz decodes about 1.25× faster single-threaded; with multiple threads LzmaNet decodes multi-block files faster than xz.
 
 ## Installation
 
