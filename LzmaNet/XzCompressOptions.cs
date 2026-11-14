@@ -38,7 +38,7 @@ public sealed class XzCompressOptions
     /// <remarks>
     /// <list type="table">
     /// <listheader><term>Preset</term><description>Dictionary Size</description></listheader>
-    /// <item><term>0</term><description>64 KB</description></item>
+    /// <item><term>0</term><description>256 KB</description></item>
     /// <item><term>1</term><description>1 MB</description></item>
     /// <item><term>2</term><description>2 MB</description></item>
     /// <item><term>3-4</term><description>4 MB</description></item>

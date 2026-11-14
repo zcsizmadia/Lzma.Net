@@ -18,10 +18,18 @@ namespace LzmaNet.LZ;
 internal sealed class HashChainMatchFinder : SlidingWindowMatchFinder
 {
     private int[] _chain;
+    private readonly int _niceLen;
 
-    public HashChainMatchFinder(int dictSize, int matchMaxLen, int cutValue)
+    /// <param name="dictSize">Dictionary (window) size.</param>
+    /// <param name="matchMaxLen">Longest match length reported.</param>
+    /// <param name="cutValue">Chain search depth.</param>
+    /// <param name="niceLen">The chain walk stops once a match at least this long
+    /// is found (liblzma's nice_len); that match is still extended to its full
+    /// length. Defaults to <paramref name="matchMaxLen"/> (walk to the depth).</param>
+    public HashChainMatchFinder(int dictSize, int matchMaxLen, int cutValue, int niceLen = int.MaxValue)
         : base(dictSize, matchMaxLen, cutValue, LzHash.HashBits(dictSize))
     {
+        _niceLen = Math.Min(niceLen, matchMaxLen);
         _chain = ArrayPool<int>.Shared.Rent(_cyclicBufferSize);
         Portable.Fill(_chain, -1, 0, _cyclicBufferSize);
     }
@@ -133,7 +141,7 @@ internal sealed class HashChainMatchFinder : SlidingWindowMatchFinder
                             distances[matchCount - 1] = _pos - curMatch - 1;
                             lengths[matchCount - 1] = len;
                         }
-                        if (len >= maxLen) break;
+                        if (len >= maxLen || len >= _niceLen) break;
                     }
                 }
                 curMatch = _chain[curMatch & _cyclicMask];

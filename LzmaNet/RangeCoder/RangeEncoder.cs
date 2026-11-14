@@ -98,20 +98,23 @@ internal sealed class RangeEncoder
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void EncodeBit(ref ushort prob, uint bit)
     {
-        uint bound = (_range >> kNumBitModelTotalBits) * prob;
-        if (bit == 0)
-        {
-            _range = bound;
-            prob += (ushort)((kBitModelTotal - prob) >> kNumMoveBits);
-        }
-        else
-        {
-            _low += bound;
-            _range -= bound;
-            prob -= (ushort)(prob >> kNumMoveBits);
-        }
+        // Branch-free: literal, length and distance bits are close to random,
+        // so a branch on the bit mispredicts often. mask is all ones for bit 1.
+        // (Callers passing a constant bit get the folded single-path code.)
+        uint p = prob;
+        uint bound = (_range >> kNumBitModelTotalBits) * p;
+        uint mask = 0u - bit;
+        _low += bound & mask;
+        uint rest = _range - bound;
+        _range = bound ^ ((bound ^ rest) & mask);
+        // bit 0: p += (2048 - p) >> 5; bit 1: p -= p >> 5 — as one expression
+        // (see LzmaDecoder.TreeBit).
+        prob = (ushort)(p - ((p + (~mask & kBitModelOffset)) >> kNumMoveBits));
         Normalize();
     }
+
+    /// <summary>-kBitModelTotal with the low kNumMoveBits bits set, as a wrapping uint32.</summary>
+    private const uint kBitModelOffset = unchecked((1u << kNumMoveBits) - 1 - kBitModelTotal);
 
     /// <summary>
     /// Encodes bits using a fixed 0.5 probability (direct bits).

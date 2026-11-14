@@ -47,6 +47,13 @@ internal sealed class LzmaEncoderProperties
     public bool OptimalParse { get; set; }
 
     /// <summary>
+    /// Use liblzma's fast-mode parser (one-step lookahead with rep-match and
+    /// distance heuristics, no pricing) with a hash-chain finder that stops at
+    /// <see cref="NiceLength"/>. xz uses it for presets 0-3. Default: false.
+    /// </summary>
+    public bool FastParse { get; set; }
+
+    /// <summary>
     /// Gets the properties byte encoding lc, lp, pb.
     /// </summary>
     public byte PropertiesByte => LzmaConstants.EncodeProperties(Lc, Lp, Pb);
@@ -60,7 +67,7 @@ internal sealed class LzmaEncoderProperties
 
         props.DictionarySize = level switch
         {
-            0 => 1 << 16,   // 64 KB
+            0 => 1 << 18,   // 256 KB
             1 => 1 << 20,   // 1 MB
             2 => 1 << 21,   // 2 MB
             3 => 1 << 22,   // 4 MB
@@ -73,27 +80,23 @@ internal sealed class LzmaEncoderProperties
             _ => throw new ArgumentOutOfRangeException(nameof(level), "Preset level must be 0-9.")
         };
 
-        props.CutValue = level switch
-        {
-            0 or 1 => 8,
-            2 or 3 => 16,
-            4 or 5 => 32,
-            6 or 7 => 64,
-            8 or 9 => 128,
-            _ => 32
-        };
+        props.MatchMaxLen = LzmaConstants.kMatchMaxLen;
 
-        props.MatchMaxLen = level <= 1 ? 128 : LzmaConstants.kMatchMaxLen;
-
-        // Lazy-matching threshold: fast levels stay greedy (NiceLength = 2
-        // disables lookahead since every match candidate is at least 2 long),
-        // mid levels look ahead moderately, high levels aggressively.
-        props.NiceLength = level switch
+        if (level <= 3)
         {
-            <= 2 => LzmaConstants.kMatchMinLen, // greedy
-            <= 5 => 32,
-            _ => 64,
-        };
+            // Presets 0-3: xz's fast mode, with xz's parameters (lzma_lzma_preset):
+            // hash chain, nice_len 128/128/273/273, search depth 4/8/24/48.
+            props.FastParse = true;
+            props.NiceLength = level <= 1 ? 128 : LzmaConstants.kMatchMaxLen;
+            props.CutValue = level switch { 0 => 4, 1 => 8, 2 => 24, _ => 48 };
+        }
+        else
+        {
+            // Presets 4-6: hash chain with lazy one-step lookahead below
+            // NiceLength. (7-9 override both values below.)
+            props.CutValue = level switch { 4 or 5 => 32, _ => 64 };
+            props.NiceLength = level <= 5 ? 32 : 64;
+        }
 
         // High presets use the binary-tree match finder with optimal parsing,
         // matching how xz positions its presets (ratio over speed).
@@ -128,6 +131,7 @@ internal sealed class LzmaEncoderProperties
             props.NiceLength = LzmaConstants.kMatchMaxLen;
             props.UseBinaryTree = true;
             props.OptimalParse = true;
+            props.FastParse = false;
         }
 
         // Standard lc/lp/pb

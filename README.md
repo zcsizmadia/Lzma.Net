@@ -187,7 +187,7 @@ All tuning knobs are exposed through the `XzCompressOptions` class:
 
 | Property | Type | Default | Description |
 |---|---|---|---|
-| `Preset` | `int` | `6` | Compression level 0–9. Higher = smaller output, more CPU/memory. Presets 0–2 are greedy, 3–6 use lazy matching, 7–9 use BT4 + optimal parsing. |
+| `Preset` | `int` | `6` | Compression level 0–9. Higher = smaller output, more CPU/memory. Presets 0–3 use xz's fast-mode parser, 4–6 use lazy matching, 7–9 use BT4 + optimal parsing. |
 | `Extreme` | `bool` | `false` | When `true`, spends significantly more CPU to improve ratio. Equivalent to `xz -e`. |
 | `Threads` | `int` | `1` | `0` = all CPUs, `1` = single-threaded, `N` = N threads. |
 | `CheckType` | `XzCheckType` | `Crc64` | Integrity check: `None`, `Crc32`, `Crc64`, or `Sha256`. |
@@ -202,7 +202,7 @@ Decompression is configured through `XzDecompressOptions` (`Threads`, `MaxOutput
 
 | Preset | Dictionary Size |
 |--------|----------------|
-| 0 | 64 KB |
+| 0 | 256 KB |
 | 1 | 1 MB |
 | 2 | 2 MB |
 | 3–4 | 4 MB |
@@ -226,7 +226,7 @@ LzmaAloneCompressStream / LzmaAloneDecompressStream   (legacy .lzma format)
        └─ LZMA2 codec      (chunked wrapper over LZMA)
             └─ LZMA codec  (LZ77 + adaptive range coding)
                  ├─ Match finders: HC4 (hash-chain) and BT4 (binary tree)
-                 ├─ Parsers: greedy / lazy / price-based optimal
+                 ├─ Parsers: xz fast mode / lazy / price-based optimal
                  ├─ Range encoder / decoder
                  └─ CRC32 / CRC64 integrity checks
 ```

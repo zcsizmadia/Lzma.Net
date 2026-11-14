@@ -1066,12 +1066,27 @@ public class CoverageTests
     }
 
     [Test]
-    public async Task EncoderProperties_Preset0and1_MatchMaxLen128()
+    public async Task EncoderProperties_Presets0To3_UseXzFastMode()
     {
-        var p0 = LzmaEncoderProperties.FromPreset(0);
-        var p1 = LzmaEncoderProperties.FromPreset(1);
-        await Assert.That(p0.MatchMaxLen).IsEqualTo(128);
-        await Assert.That(p1.MatchMaxLen).IsEqualTo(128);
+        // xz's lzma_lzma_preset for levels 0-3: fast mode, hash chain,
+        // dictionary 256K/1M/2M/4M, nice_len 128/128/273/273, depth 4/8/24/48.
+        int[] dict = [1 << 18, 1 << 20, 1 << 21, 1 << 22];
+        int[] nice = [128, 128, 273, 273];
+        int[] depth = [4, 8, 24, 48];
+        for (int level = 0; level <= 3; level++)
+        {
+            var p = LzmaEncoderProperties.FromPreset(level);
+            await Assert.That(p.FastParse).IsTrue();
+            await Assert.That(p.UseBinaryTree).IsFalse();
+            await Assert.That(p.OptimalParse).IsFalse();
+            await Assert.That(p.DictionarySize).IsEqualTo(dict[level]);
+            await Assert.That(p.NiceLength).IsEqualTo(nice[level]);
+            await Assert.That(p.CutValue).IsEqualTo(depth[level]);
+            await Assert.That(p.MatchMaxLen).IsEqualTo(273);
+        }
+
+        await Assert.That(LzmaEncoderProperties.FromPreset(4).FastParse).IsFalse();
+        await Assert.That(LzmaEncoderProperties.FromPreset(0, extreme: true).FastParse).IsFalse();
     }
 
     [Test]

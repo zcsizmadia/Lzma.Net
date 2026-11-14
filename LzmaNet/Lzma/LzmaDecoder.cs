@@ -229,8 +229,10 @@ internal sealed class LzmaDecoder
     /// decoder does with conditional moves. Decision bits (is-match, is-rep,
     /// ...) keep <see cref="Bit"/>: the code branches on them anyway.
     /// </summary>
-    /// <param name="p">The value of <paramref name="prob"/>, loaded by the caller
-    /// ahead of time (see <see cref="BitTree"/>).</param>
+    /// <remarks>
+    /// <c>p</c> is the value of <c>prob</c>, loaded by the caller ahead of time
+    /// (see <see cref="BitTree"/>).
+    /// </remarks>
     /// <returns>All ones when the decoded bit is 0, zero when it is 1; the bit
     /// itself is the return value plus one.</returns>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
