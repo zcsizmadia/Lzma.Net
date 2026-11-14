@@ -138,6 +138,7 @@ internal sealed class LzmaEncoder : IDisposable
         RangeDecoder.InitProbs(_litProbs);
         RangeDecoder.InitProbs(_matchLenProbs);
         RangeDecoder.InitProbs(_repLenProbs);
+        InvalidatePrices();
     }
 
     /// <summary>
@@ -553,6 +554,7 @@ internal sealed class LzmaEncoder : IDisposable
         Reps = Reps.AfterMatch(dist);
 
         EncodeLength(rc, _matchLenProbs, len - LzmaConstants.kMatchMinLen, posState);
+        _matchPriceCount++;
 
         int lenToPosState = LzmaConstants.GetLenToPosState(len);
         int posSlot = GetPosSlot((uint)dist);
@@ -577,6 +579,7 @@ internal sealed class LzmaEncoder : IDisposable
                 uint alignPart = (uint)dist & LzmaConstants.kAlignMask;
                 rc.EncodeDirectBits(directPart, numDirectBits - LzmaConstants.kNumAlignBits);
                 rc.EncodeReverseBitTree(_alignProbs, 0, LzmaConstants.kNumAlignBits, alignPart);
+                _alignPriceCount++;
             }
         }
 
@@ -678,18 +681,17 @@ internal sealed class LzmaEncoder : IDisposable
     // to walk once, then reads the row directly — the inner loops carry no
     // per-length validity check.
     //
-    // Distance prices are cached the same way, and for the same reason: the
-    // slot, footer and align probabilities cannot change during a window. A
-    // distance's price is slot price (per lenToPosState and slot) + footer
-    // (reverse bit tree for dist < kNumFullDistances, otherwise direct bits +
-    // align bits), each piece cached on first use.
+    // Distance prices are cached too: a distance's price is slot price (per
+    // lenToPosState and slot) + footer (reverse bit tree for dist <
+    // kNumFullDistances, otherwise direct bits + align bits), each piece
+    // cached on first use. Unlike length prices they are allowed to go stale
+    // across windows (see _distGeneration below), as in liblzma.
     private const int kLenPriceCoders = 2;   // 0 = match lengths, 1 = rep lengths
     private const int kLenPriceMatch = 0;
     private const int kLenPriceRep = 1;
     private const int kLenRows = kLenPriceCoders * LzmaConstants.kNumPosStatesMax;
     private uint[]? _lenPrice;               // [row * kNumLenSymbols + (len - 2)]
-    private int[]? _lenRowFilled;            // lengths 2.._lenRowFilled[row] are valid...
-    private uint[]? _lenRowStamp;            // ...when the row's stamp is the current generation
+    private int[]? _lenRowFilled;            // lengths 2.._lenRowFilled[row] are valid
 
     private uint[]? _slotPrice;              // [lenToPosState * kNumPosSlots + slot]
     private uint[]? _slotPriceStamp;
@@ -698,7 +700,20 @@ internal sealed class LzmaEncoder : IDisposable
     private uint[]? _alignPrice;             // [dist & kAlignMask]
     private uint[]? _alignPriceStamp;
 
-    private uint _priceGeneration = 1;       // 0 is the "never filled" stamp
+    // Distance and align prices go stale on liblzma's schedule
+    // (lzma_encoder_optimum_normal.c): refreshed after 128 encoded matches and
+    // after 16 matches that used the align bits, instead of per parse window.
+    // That made presets 4/6/9 ~5%/2%/2% faster for +0.00/0.06/0.04% output.
+    // Length prices stay exact per window: making them stale too (liblzma
+    // refreshes a row after nice_len - 1 uses) gained ~3% more but cost
+    // ~0.2% output at presets 6-9.
+    private uint _distGeneration = 1;        // 0 is the "never filled" stamp
+    private uint _alignGeneration = 1;
+    private int _matchPriceCount;
+    private int _alignPriceCount;
+    private const int kDistPriceUpdate = 1 << 7;
+    private const int kAlignPriceUpdate = LzmaConstants.kAlignTableSize;
+
 
     private void EnsureOptBuffers()
     {
@@ -713,7 +728,6 @@ internal sealed class LzmaEncoder : IDisposable
 
         _lenPrice = new uint[kLenRows * LzmaConstants.kNumLenSymbols];
         _lenRowFilled = new int[kLenRows];
-        _lenRowStamp = new uint[kLenRows];
 
         _slotPrice = new uint[LzmaConstants.kPosSlotCoderSize];
         _slotPriceStamp = new uint[LzmaConstants.kPosSlotCoderSize];
@@ -721,23 +735,56 @@ internal sealed class LzmaEncoder : IDisposable
         _footerPriceStamp = new uint[LzmaConstants.kNumFullDistances];
         _alignPrice = new uint[LzmaConstants.kAlignTableSize];
         _alignPriceStamp = new uint[LzmaConstants.kAlignTableSize];
+        InvalidatePrices();
     }
 
     /// <summary>
-    /// Starts a new pricing window, invalidating every cached price without
-    /// touching the tables.
+    /// Marks every cached price stale (after a probability reset, or before
+    /// first use).
+    /// </summary>
+    private void InvalidatePrices()
+    {
+        if (_lenRowFilled is null)
+            return;
+        Portable.Fill(_lenRowFilled, LzmaConstants.kMatchMinLen - 1);
+        NextDistGeneration();
+        NextAlignGeneration();
+    }
+
+    private void NextDistGeneration()
+    {
+        _matchPriceCount = 0;
+        if (++_distGeneration == 0)
+        {
+            // Wrapped: stamps would compare equal to the new generation.
+            Portable.Clear(_slotPriceStamp!);
+            Portable.Clear(_footerPriceStamp!);
+            _distGeneration = 1;
+        }
+    }
+
+    private void NextAlignGeneration()
+    {
+        _alignPriceCount = 0;
+        if (++_alignGeneration == 0)
+        {
+            Portable.Clear(_alignPriceStamp!);
+            _alignGeneration = 1;
+        }
+    }
+
+    /// <summary>
+    /// Refreshes the distance and align price caches when enough matches have
+    /// been encoded since their last refresh (liblzma checks at the same point,
+    /// the start of each parse).
     /// </summary>
     private void BeginPricingWindow()
     {
-        if (++_priceGeneration == 0)
-        {
-            // Wrapped: stamps would compare equal to the new generation.
-            Portable.Clear(_lenRowStamp!);
-            Portable.Clear(_slotPriceStamp!);
-            Portable.Clear(_footerPriceStamp!);
-            Portable.Clear(_alignPriceStamp!);
-            _priceGeneration = 1;
-        }
+        Portable.Fill(_lenRowFilled!, LzmaConstants.kMatchMinLen - 1);
+        if (_matchPriceCount >= kDistPriceUpdate)
+            NextDistGeneration();
+        if (_alignPriceCount >= kAlignPriceUpdate)
+            NextAlignGeneration();
     }
 
     /// <summary>
@@ -749,17 +796,14 @@ internal sealed class LzmaEncoder : IDisposable
     {
         int row = (coder << LzmaConstants.kNumPosStatesBitsMax) + posState;
         int rowBase = row * LzmaConstants.kNumLenSymbols - LzmaConstants.kMatchMinLen;
-        int filled = _lenRowStamp![row] == _priceGeneration
-            ? _lenRowFilled![row]
-            : LzmaConstants.kMatchMinLen - 1;
+        int filled = _lenRowFilled![row];
 
         if (filled < maxLen)
         {
             uint[] prices = _lenPrice!;
             for (int len = filled + 1; len <= maxLen; len++)
                 prices[rowBase + len] = PriceLen(lenProbs, posState, len);
-            _lenRowFilled![row] = maxLen;
-            _lenRowStamp[row] = _priceGeneration;
+            _lenRowFilled[row] = maxLen;
         }
         return rowBase;
     }
@@ -771,7 +815,7 @@ internal sealed class LzmaEncoder : IDisposable
     /// </summary>
     private uint PriceDistCached(int lenToPosState, int dist)
     {
-        uint gen = _priceGeneration;
+        uint gen = _distGeneration;
         int slot = GetPosSlot((uint)dist);
 
         int s = lenToPosState * LzmaConstants.kNumPosSlots + slot;
@@ -794,11 +838,11 @@ internal sealed class LzmaEncoder : IDisposable
         }
 
         int a = dist & (int)LzmaConstants.kAlignMask;
-        if (_alignPriceStamp![a] != gen)
+        if (_alignPriceStamp![a] != _alignGeneration)
         {
             _alignPrice![a] = Price.GetReverseBitTreePrice(_alignProbs, 0,
                 LzmaConstants.kNumAlignBits, (uint)a);
-            _alignPriceStamp[a] = gen;
+            _alignPriceStamp[a] = _alignGeneration;
         }
         int numDirectBits = (slot >> 1) - 1;
         return price
