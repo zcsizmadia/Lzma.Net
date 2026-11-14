@@ -23,21 +23,34 @@ namespace LzmaNet.Lzma;
 /// </summary>
 internal sealed class LzmaDecoder
 {
-    // Probability model arrays
-    private readonly ushort[] _isMatch;      // [state][posState]
-    private readonly ushort[] _isRep;         // [state]
-    private readonly ushort[] _isRepG0;       // [state]
-    private readonly ushort[] _isRepG1;       // [state]
-    private readonly ushort[] _isRepG2;       // [state]
-    private readonly ushort[] _isRep0Long;    // [state][posState]
-    private readonly ushort[] _posSlotCoders; // [lenToPosState][posSlot]
-    private readonly ushort[] _posSpecProbs;  // position-specific bit trees for distance 4..127
-    private readonly ushort[] _alignProbs;    // alignment bits (4 bits)
-    private readonly ushort[] _litProbs;      // literal sub-coders
+    /// <summary>
+    /// Every probability model in one array, at the fixed offsets below (literal
+    /// coders last, since their count depends on lc + lp).
+    /// </summary>
+    /// <remarks>
+    /// One array means one base reference in the decode loop. With a separate
+    /// array per model the loop held twelve base references live alongside the
+    /// range coder, LZMA state and rep distances — more than x64 has registers —
+    /// and the JIT spilled and reloaded them inside the bit-tree loops. liblzma
+    /// keeps its models in one struct for the same reason.
+    /// </remarks>
+    private readonly ushort[] _probs;
 
-    // Length decoders (match length and rep length)
-    private readonly ushort[] _matchLenProbs;
-    private readonly ushort[] _repLenProbs;
+    private const int kIsMatch = 0;                                                          // [state][posState]
+    private const int kIsRep = kIsMatch + LzmaConstants.kNumStates * LzmaConstants.kNumPosStatesMax; // [state]
+    private const int kIsRepG0 = kIsRep + LzmaConstants.kNumStates;                          // [state]
+    private const int kIsRepG1 = kIsRepG0 + LzmaConstants.kNumStates;                        // [state]
+    private const int kIsRepG2 = kIsRepG1 + LzmaConstants.kNumStates;                        // [state]
+    private const int kIsRep0Long = kIsRepG2 + LzmaConstants.kNumStates;                     // [state][posState]
+    private const int kPosSlot = kIsRep0Long + LzmaConstants.kNumStates * LzmaConstants.kNumPosStatesMax; // [lenToPosState][posSlot]
+    private const int kPosSpec = kPosSlot + LzmaConstants.kNumLenToPosStates * LzmaConstants.kNumPosSlots; // distances 4..127
+    private const int kAlign = kPosSpec + LzmaConstants.kNumFullDistances - LzmaConstants.kEndPosModelIndex;
+    private const int kMatchLen = kAlign + LzmaConstants.kAlignTableSize;
+    private const int kLenCoderProbs = 2 + (LzmaConstants.kNumPosStatesMax << LzmaConstants.kNumLowLenBits)
+                                         + (LzmaConstants.kNumPosStatesMax << LzmaConstants.kNumMidLenBits)
+                                         + (1 << LzmaConstants.kNumHighLenBits);
+    private const int kRepLen = kMatchLen + kLenCoderProbs;
+    private const int kLiteral = kRepLen + kLenCoderProbs;                                   // literal sub-coders
 
     // Properties
     private int _lc, _lp, _pb;
@@ -61,7 +74,7 @@ internal sealed class LzmaDecoder
     private const int kLenHigh = kLenMid + (LzmaConstants.kNumPosStatesMax << LzmaConstants.kNumMidLenBits);
 
     /// <summary>Number of literal context bits + literal position bits used to size
-    /// <see cref="_litProbs"/>; a decoder can only be reused for the same lc+lp sum.</summary>
+    /// the literal coders in <see cref="_probs"/>; a decoder can only be reused for the same lc+lp sum.</summary>
     public int LcLp => _lc + _lp;
 
     /// <summary>
@@ -78,25 +91,8 @@ internal sealed class LzmaDecoder
         _posMask = (1 << pb) - 1;
         _litPosMask = (1 << lp) - 1;
 
-        _isMatch = new ushort[LzmaConstants.kNumStates * LzmaConstants.kNumPosStatesMax];
-        _isRep = new ushort[LzmaConstants.kNumStates];
-        _isRepG0 = new ushort[LzmaConstants.kNumStates];
-        _isRepG1 = new ushort[LzmaConstants.kNumStates];
-        _isRepG2 = new ushort[LzmaConstants.kNumStates];
-        _isRep0Long = new ushort[LzmaConstants.kNumStates * LzmaConstants.kNumPosStatesMax];
-
-        _posSlotCoders = new ushort[LzmaConstants.kNumLenToPosStates * LzmaConstants.kNumPosSlots];
-        _posSpecProbs = new ushort[LzmaConstants.kNumFullDistances - LzmaConstants.kEndPosModelIndex];
-        _alignProbs = new ushort[LzmaConstants.kAlignTableSize];
-
         int numLitSubcoders = 1 << (lc + lp);
-        _litProbs = new ushort[numLitSubcoders * LzmaConstants.kLitSubcoderSize];
-
-        int lenProbs = 2 + (LzmaConstants.kNumPosStatesMax << LzmaConstants.kNumLowLenBits)
-                         + (LzmaConstants.kNumPosStatesMax << LzmaConstants.kNumMidLenBits)
-                         + (1 << LzmaConstants.kNumHighLenBits);
-        _matchLenProbs = new ushort[lenProbs];
-        _repLenProbs = new ushort[lenProbs];
+        _probs = new ushort[kLiteral + numLitSubcoders * LzmaConstants.kLitSubcoderSize];
 
         ResetState();
     }
@@ -108,18 +104,7 @@ internal sealed class LzmaDecoder
     {
         _state = 0;
         _rep0 = _rep1 = _rep2 = _rep3 = 0;
-        RangeDecoder.InitProbs(_isMatch);
-        RangeDecoder.InitProbs(_isRep);
-        RangeDecoder.InitProbs(_isRepG0);
-        RangeDecoder.InitProbs(_isRepG1);
-        RangeDecoder.InitProbs(_isRepG2);
-        RangeDecoder.InitProbs(_isRep0Long);
-        RangeDecoder.InitProbs(_posSlotCoders);
-        RangeDecoder.InitProbs(_posSpecProbs);
-        RangeDecoder.InitProbs(_alignProbs);
-        RangeDecoder.InitProbs(_litProbs);
-        RangeDecoder.InitProbs(_matchLenProbs);
-        RangeDecoder.InitProbs(_repLenProbs);
+        RangeDecoder.InitProbs(_probs);
     }
 
     /// <summary>
@@ -191,7 +176,193 @@ internal sealed class LzmaDecoder
             exactSize: false, allowEndMarker: true);
     }
 
-    private bool DecodeCore(ref RangeDecoder rc, Span<byte> output, ref int outPos,
+    /// <summary>
+    /// Range-coder state lifted out of <see cref="RangeDecoder"/> for the hot loop.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="RangeDecoder"/> is passed by reference, so its fields live in
+    /// memory and every bit decoded through it loads and stores
+    /// <c>range</c>/<c>code</c>/position. Copying them into this small local struct, and
+    /// inlining every bit, bit-tree, length and distance decode, lets the JIT
+    /// promote the fields to registers for the whole loop — the same discipline
+    /// liblzma's <c>rc_*</c> macros get from C locals. The input is passed alongside
+    /// as a <c>ref byte</c> with <see cref="Limit"/> as its length, so a
+    /// normalization is one compare and one load.
+    /// </remarks>
+    private struct Rc
+    {
+        public uint Range;
+        public uint Code;
+        public int Pos;
+        public int Limit;
+    }
+
+    private const uint kTopValue = 1u << 24;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static uint Bit(ref Rc rc, ref byte input, ref ushort prob)
+    {
+        // Each branch normalizes and returns a constant, so after inlining the
+        // JIT threads the caller's test of the result into this compare instead
+        // of materializing the bit and branching on it a second time.
+        uint p = prob;
+        uint bound = (rc.Range >> RangeDecoder.kNumBitModelTotalBits) * p;
+        if (rc.Code < bound)
+        {
+            rc.Range = bound;
+            prob = (ushort)(p + ((RangeDecoder.kBitModelTotal - p) >> RangeDecoder.kNumMoveBits));
+            Normalize(ref rc, ref input);
+            return 0;
+        }
+        rc.Range -= bound;
+        rc.Code -= bound;
+        prob = (ushort)(p - (p >> RangeDecoder.kNumMoveBits));
+        Normalize(ref rc, ref input);
+        return 1;
+    }
+
+    /// <summary>
+    /// <see cref="Bit"/> without a data-dependent branch, for bits whose value
+    /// the CPU cannot predict: the inside of bit trees (literal bits, lengths,
+    /// distance slots). The decoded bit becomes a mask that selects the new
+    /// range, code and probability arithmetically, as liblzma's x86-64 range
+    /// decoder does with conditional moves. Decision bits (is-match, is-rep,
+    /// ...) keep <see cref="Bit"/>: the code branches on them anyway.
+    /// </summary>
+    /// <param name="p">The value of <paramref name="prob"/>, loaded by the caller
+    /// ahead of time (see <see cref="BitTree"/>).</param>
+    /// <returns>All ones when the decoded bit is 0, zero when it is 1; the bit
+    /// itself is the return value plus one.</returns>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static uint TreeBit(ref Rc rc, ref byte input, ref ushort prob, uint p)
+    {
+        // Selects are done with a mask rather than ternaries: the JIT does not
+        // if-convert inside loops, so ternaries would compile back to branches.
+        uint bound = (rc.Range >> RangeDecoder.kNumBitModelTotalBits) * p;
+        // mask0 is all ones when the bit is 0 (code < bound), else zero. The
+        // sign of a 64-bit subtraction gives it in two instructions (sub, sar);
+        // a compare would need cmp, setae, movzx and neg on the critical path
+        // that every following bit waits for.
+        uint mask0 = (uint)(((long)rc.Code - bound) >> 63);
+        // bit 0: range = bound;         code unchanged
+        // bit 1: range = range - bound; code -= bound
+        uint rb = rc.Range - bound;
+        rc.Range = rb ^ ((rb ^ bound) & mask0);
+        rc.Code -= bound & ~mask0;
+        // liblzma's single-expression update: bit 1 is p -= p >> 5; bit 0 is
+        // p += (2048 - p) >> 5, which equals p -= (p + kBitModelOffset) >> 5 in
+        // wrapping 32-bit arithmetic (the shifted value's high bits cancel in
+        // the 16-bit store).
+        prob = (ushort)(p - ((p + (mask0 & kBitModelOffset)) >> RangeDecoder.kNumMoveBits));
+        Normalize(ref rc, ref input);
+        return mask0;
+    }
+
+    /// <summary>
+    /// -kBitModelTotal with the low kNumMoveBits bits set, as a wrapping uint32
+    /// (liblzma's RC_BIT_MODEL_OFFSET); see <see cref="TreeBit"/>.
+    /// </summary>
+    private const uint kBitModelOffset = unchecked((1u << RangeDecoder.kNumMoveBits) - 1 - RangeDecoder.kBitModelTotal);
+
+    /// <summary>
+    /// Loads the probabilities at <paramref name="index"/> and
+    /// <paramref name="index"/> + 1 — the two children of a bit-tree node — in
+    /// one read, for <see cref="SelectChild"/>.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static uint LoadPair(ref ushort probs, uint index)
+    {
+        uint pair = Unsafe.ReadUnaligned<uint>(ref Unsafe.As<ushort, byte>(ref Unsafe.Add(ref probs, (nint)index)));
+        return BitConverter.IsLittleEndian ? pair : (pair >> 16) | (pair << 16);
+    }
+
+    /// <summary>
+    /// Picks the child probability from a <see cref="LoadPair"/> result: the
+    /// first (left, bit 0) when <paramref name="mask0"/> is all ones.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static uint SelectChild(uint pair, uint mask0)
+        => (pair >> (int)(~mask0 & 16)) & 0xFFFF;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void Normalize(ref Rc rc, ref byte input)
+    {
+        if (rc.Range < kTopValue)
+        {
+            if ((uint)rc.Pos >= (uint)rc.Limit)
+                ThrowTruncated();
+            rc.Range <<= 8;
+            rc.Code = (rc.Code << 8) | Unsafe.Add(ref input, rc.Pos++);
+        }
+    }
+
+    /// <summary>
+    /// Decodes a bit tree: returns the symbol with its leading 1 still set, in
+    /// [<paramref name="limit"/>, 2 * <paramref name="limit"/>).
+    /// </summary>
+    /// <remarks>
+    /// Each step loads both children of the current node before its bit is
+    /// decoded and then selects one by the bit, as liblzma's x86-64 bit-tree
+    /// decoder does. Otherwise the next probability's load (a few cycles of L1
+    /// latency) would wait for the bit, then delay the next multiply, on every
+    /// bit. The last step's children lie past the tree and their values are
+    /// unused; the reads stay inside <see cref="_probs"/>, because every tree
+    /// is followed by other models except the literal coders, whose 8-bit tree
+    /// (children up to 0x1FF) sits inside a 0x300-entry coder.
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static uint BitTree(ref Rc rc, ref byte input, ref ushort probs, uint limit)
+    {
+        uint symbol = 1;
+        uint p = Unsafe.Add(ref probs, 1);
+        do
+        {
+            uint pair = LoadPair(ref probs, symbol << 1);
+            uint mask0 = TreeBit(ref rc, ref input, ref Unsafe.Add(ref probs, (nint)symbol), p);
+            symbol = (symbol << 1) + 1 + mask0;
+            p = SelectChild(pair, mask0);
+        } while (symbol < limit);
+        return symbol;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static uint ReverseBitTree(ref Rc rc, ref byte input, ref ushort probs, int numBits)
+    {
+        uint symbol = 1;
+        uint result = 0;
+        uint p = Unsafe.Add(ref probs, 1);
+        for (int i = 0; i < numBits; i++)
+        {
+            uint pair = LoadPair(ref probs, symbol << 1);
+            uint bit = TreeBit(ref rc, ref input, ref Unsafe.Add(ref probs, (nint)symbol), p) + 1;
+            symbol = (symbol << 1) | bit;
+            result |= bit << i;
+            p = SelectChild(pair, 0u - (bit ^ 1));
+        }
+        return result;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static uint DirectBits(ref Rc rc, ref byte input, int numBits)
+    {
+        uint result = 0;
+        for (int i = numBits; i > 0; i--)
+        {
+            rc.Range >>= 1;
+            uint t = (rc.Code - rc.Range) >> 31; // 1 if code < range, 0 otherwise
+            rc.Code -= rc.Range & (t - 1);       // subtract range if t == 0
+            result = (result << 1) | (1 - t);
+            Normalize(ref rc, ref input);
+        }
+        return result;
+    }
+
+    // Throw-only and deliberately not NoInlining: the JIT then treats the call
+    // sites as no-return and keeps the range-coder state in registers across them.
+    private static void ThrowTruncated()
+        => throw new LzmaDataErrorException("Unexpected end of range-coded data.");
+
+    private bool DecodeCore(ref RangeDecoder rangeDecoder, Span<byte> output, ref int outPos,
                             int dictStart, int uncompressedSize,
                             bool exactSize, bool allowEndMarker)
     {
@@ -203,168 +374,237 @@ internal sealed class LzmaDecoder
             throw new LzmaDataErrorException("Output buffer is too small for the LZMA data.");
         }
 
-        // Hoist all hot state into locals so the JIT can keep them in registers;
-        // fields are written back once at the end.
+        // Register budget. x64 has 16 general registers and this loop wants more
+        // than that, so the JIT must keep something on the stack. Only the
+        // values touched on every bit are locals: the range coder, the LZMA
+        // state, rep0, the position and the three base references. rep1..rep3
+        // live in their fields and are read and written there directly (only
+        // rep matches and new matches touch them), and the lc/lp/pb masks are
+        // read from fields per symbol. Positions are relative to the window
+        // start, so dictStart is not live either.
         int state = _state;
-        int rep0 = _rep0, rep1 = _rep1, rep2 = _rep2, rep3 = _rep3;
+        int rep0 = _rep0;
 
         // A matched literal at the start of a continuation chunk consumes rep0 before
         // any match validates it; reject a stale rep0 that reaches outside the window.
         if (state >= 7 && (rep0 < 0 || rep0 >= outPos - dictStart))
             throw new LzmaDataErrorException("Invalid rep distance at chunk start.");
-        int posMask = _posMask;
-        int litPosMask = _litPosMask;
-        int lc = _lc;
-        int pos = outPos;
-        int remaining = uncompressedSize;
 
-        ref ushort isMatchRoot = ref MemoryMarshal.GetArrayDataReference(_isMatch);
-        ref ushort isRepRoot = ref MemoryMarshal.GetArrayDataReference(_isRep);
-        ref ushort isRepG0Root = ref MemoryMarshal.GetArrayDataReference(_isRepG0);
-        ref ushort isRepG1Root = ref MemoryMarshal.GetArrayDataReference(_isRepG1);
-        ref ushort isRepG2Root = ref MemoryMarshal.GetArrayDataReference(_isRepG2);
-        ref ushort isRep0LongRoot = ref MemoryMarshal.GetArrayDataReference(_isRep0Long);
-        ref ushort litRoot = ref MemoryMarshal.GetArrayDataReference(_litProbs);
+        // The window is win[0, p), with win = output[dictStart..]; writes stay
+        // below end (plus the end-marker slack checked above). Every read at
+        // p - dist - 1 is preceded by a distance check against p — for a matched
+        // literal, rep0 was validated by the match that set it or by the
+        // chunk-start check above — so the unchecked accesses stay inside the
+        // span.
+        ref byte win = ref Unsafe.Add(ref MemoryMarshal.GetReference(output), dictStart);
+        int p = outPos - dictStart;
+        int end = p + uncompressedSize;
 
-        while (remaining > 0)
+        ReadOnlySpan<byte> inputSpan = rangeDecoder.Buffer;
+        ref byte input = ref MemoryMarshal.GetReference(inputSpan);
+        var rc = new Rc
         {
-            int posState = (pos - dictStart) & posMask;
+            Range = rangeDecoder.Range,
+            Code = rangeDecoder.Code,
+            Pos = rangeDecoder.Position,
+            Limit = inputSpan.Length,
+        };
 
-            if (rc.DecodeBit(ref Unsafe.Add(ref isMatchRoot,
+        ref ushort probs = ref MemoryMarshal.GetArrayDataReference(_probs);
+
+        while (p < end)
+        {
+            int posState = p & _posMask;
+
+            if (Bit(ref rc, ref input, ref Unsafe.Add(ref probs, kIsMatch +
                     (state << LzmaConstants.kNumPosStatesBitsMax) + posState)) == 0)
             {
                 // Literal
-                byte prevByte = pos > dictStart ? output[pos - 1] : (byte)0;
-                int litState = (((pos - dictStart) & litPosMask) << lc) + (prevByte >> (8 - lc));
-                ref ushort litSub = ref Unsafe.Add(ref litRoot, litState * LzmaConstants.kLitSubcoderSize);
+                uint prevByte = p > 0 ? Unsafe.Add(ref win, p - 1) : 0u;
+                int lc = _lc;
+                int litState = ((p & _litPosMask) << lc) + (int)(prevByte >> (8 - lc));
+                ref ushort litSub = ref Unsafe.Add(ref probs, kLiteral + litState * LzmaConstants.kLitSubcoderSize);
 
-                uint symbol = 1;
+                uint symbol;
                 if (state >= 7) // !StateIsLiteral: matched literal, use match byte for context
                 {
-                    byte matchByte = output[pos - rep0 - 1];
+                    // Branchless matched literal (LZMA SDK form). While the
+                    // decoded bits agree with the match byte, offs is 0x100 and
+                    // the probability index is 0x100/0x200 + symbol (by match
+                    // bit); at the first disagreement offs drops to 0 and the
+                    // index becomes the plain literal coder's symbol. Same
+                    // probabilities as the branchy two-phase loop, without its
+                    // unpredictable early exit.
+                    //
+                    // Unlike BitTree, the next probability is not preloaded:
+                    // its two candidates are not adjacent, and the extra
+                    // index arithmetic spilled registers in this loop
+                    // (measured ~1% slower overall).
+                    uint matchByte = Unsafe.Add(ref win, p - rep0 - 1);
+                    uint offs = 0x100;
+                    symbol = 1;
                     do
                     {
-                        uint matchBit = (uint)(matchByte >> 7) & 1;
                         matchByte <<= 1;
-                        uint bit = rc.DecodeBit(ref Unsafe.Add(ref litSub,
-                            (int)(((1 + matchBit) << 8) + symbol)));
-                        symbol = (symbol << 1) | bit;
-                        if (matchBit != bit)
-                            break;
+                        uint matchBit = matchByte & offs;
+                        ref ushort prob = ref Unsafe.Add(ref litSub, (nint)(offs + matchBit + symbol));
+                        uint mask0 = TreeBit(ref rc, ref input, ref prob, prob);
+                        symbol = (symbol << 1) + 1 + mask0;
+                        offs &= matchBit ^ mask0;
                     } while (symbol < 0x100);
-                }
-
-                // Normal literal decoding (or finishing after match divergence)
-                while (symbol < 0x100)
-                    symbol = (symbol << 1) | rc.DecodeBit(ref Unsafe.Add(ref litSub, (int)symbol));
-
-                output[pos++] = (byte)symbol;
-                state = LzmaConstants.StateUpdateLiteral(state);
-                remaining--;
-            }
-            else
-            {
-                int len;
-                if (rc.DecodeBit(ref Unsafe.Add(ref isRepRoot, state)) != 0)
-                {
-                    // Rep match
-                    if (rc.DecodeBit(ref Unsafe.Add(ref isRepG0Root, state)) == 0)
-                    {
-                        // Rep0
-                        if (rc.DecodeBit(ref Unsafe.Add(ref isRep0LongRoot,
-                                (state << LzmaConstants.kNumPosStatesBitsMax) + posState)) == 0)
-                        {
-                            // Short rep (single byte at rep0 distance)
-                            if (rep0 >= pos - dictStart)
-                                throw new LzmaDataErrorException("Invalid distance in short rep.");
-                            output[pos] = output[pos - rep0 - 1];
-                            pos++;
-                            state = LzmaConstants.StateUpdateShortRep(state);
-                            remaining--;
-                            continue;
-                        }
-                        // Long rep0
-                    }
-                    else
-                    {
-                        int dist;
-                        if (rc.DecodeBit(ref Unsafe.Add(ref isRepG1Root, state)) == 0)
-                        {
-                            dist = rep1;
-                        }
-                        else
-                        {
-                            if (rc.DecodeBit(ref Unsafe.Add(ref isRepG2Root, state)) == 0)
-                            {
-                                dist = rep2;
-                            }
-                            else
-                            {
-                                dist = rep3;
-                                rep3 = rep2;
-                            }
-                            rep2 = rep1;
-                        }
-                        rep1 = rep0;
-                        rep0 = dist;
-                    }
-
-                    len = DecodeLength(ref rc, _repLenProbs, posState);
-                    state = LzmaConstants.StateUpdateLongRep(state);
                 }
                 else
                 {
-                    // Match
-                    rep3 = rep2;
-                    rep2 = rep1;
-                    rep1 = rep0;
-
-                    len = DecodeLength(ref rc, _matchLenProbs, posState);
-                    int distSlot = DecodeDistSlot(ref rc,
-                        LzmaConstants.GetLenToPosState(len + LzmaConstants.kMatchMinLen));
-                    rep0 = DecodeDistance(ref rc, distSlot);
-                    state = LzmaConstants.StateUpdateMatch(state);
+                    symbol = BitTree(ref rc, ref input, ref litSub, 0x100);
                 }
 
-                len += LzmaConstants.kMatchMinLen;
-
-                if (allowEndMarker && rep0 == -1)
-                {
-                    // Distance 0xFFFFFFFF marks the end of a .lzma payload.
-                    outPos = pos;
-                    _state = state;
-                    _rep0 = rep0;
-                    _rep1 = rep1;
-                    _rep2 = rep2;
-                    _rep3 = rep3;
-                    return true;
-                }
-
-                if (exactSize && len > remaining)
-                    throw new LzmaDataErrorException("LZMA match exceeds chunk boundary.");
-                if (rep0 < 0 || rep0 >= pos - dictStart)
-                    throw new LzmaDataErrorException("Invalid match distance.");
-
-                CopyMatch(output, pos, rep0, len);
-                pos += len;
-                remaining -= len;
+                Unsafe.Add(ref win, p++) = (byte)symbol;
+                state = LzmaConstants.StateUpdateLiteral(state);
+                continue;
             }
+
+            int len;
+            if (Bit(ref rc, ref input, ref Unsafe.Add(ref probs, kIsRep + state)) != 0)
+            {
+                // Rep match
+                if (Bit(ref rc, ref input, ref Unsafe.Add(ref probs, kIsRepG0 + state)) == 0)
+                {
+                    // Rep0
+                    if (Bit(ref rc, ref input, ref Unsafe.Add(ref probs, kIsRep0Long +
+                            (state << LzmaConstants.kNumPosStatesBitsMax) + posState)) == 0)
+                    {
+                        // Short rep (single byte at rep0 distance)
+                        if (rep0 >= p)
+                            throw new LzmaDataErrorException("Invalid distance in short rep.");
+                        Unsafe.Add(ref win, p) = Unsafe.Add(ref win, p - rep0 - 1);
+                        p++;
+                        state = LzmaConstants.StateUpdateShortRep(state);
+                        continue;
+                    }
+                    // Long rep0
+                }
+                else
+                {
+                    int dist;
+                    if (Bit(ref rc, ref input, ref Unsafe.Add(ref probs, kIsRepG1 + state)) == 0)
+                    {
+                        dist = _rep1;
+                    }
+                    else
+                    {
+                        if (Bit(ref rc, ref input, ref Unsafe.Add(ref probs, kIsRepG2 + state)) == 0)
+                        {
+                            dist = _rep2;
+                        }
+                        else
+                        {
+                            dist = _rep3;
+                            _rep3 = _rep2;
+                        }
+                        _rep2 = _rep1;
+                    }
+                    _rep1 = rep0;
+                    rep0 = dist;
+                }
+
+                len = DecodeLength(ref rc, ref input, ref Unsafe.Add(ref probs, kRepLen), posState);
+                state = LzmaConstants.StateUpdateLongRep(state);
+            }
+            else
+            {
+                // Match
+                _rep3 = _rep2;
+                _rep2 = _rep1;
+                _rep1 = rep0;
+
+                len = DecodeLength(ref rc, ref input, ref Unsafe.Add(ref probs, kMatchLen), posState);
+                int distSlot = (int)BitTree(ref rc, ref input,
+                    ref Unsafe.Add(ref probs, kPosSlot +
+                        LzmaConstants.GetLenToPosState(len + LzmaConstants.kMatchMinLen)
+                            * LzmaConstants.kNumPosSlots),
+                    1u << LzmaConstants.kNumPosSlotBits) - (1 << LzmaConstants.kNumPosSlotBits);
+                rep0 = DecodeDistance(ref rc, ref input, ref probs, distSlot);
+                state = LzmaConstants.StateUpdateMatch(state);
+            }
+
+            len += LzmaConstants.kMatchMinLen;
+
+            if (allowEndMarker && rep0 == -1)
+            {
+                // Distance 0xFFFFFFFF marks the end of a .lzma payload.
+                rangeDecoder.SetState(rc.Range, rc.Code, rc.Pos);
+                outPos = dictStart + p;
+                _state = state;
+                _rep0 = rep0;
+                return true;
+            }
+
+            if (exactSize && len > end - p)
+                throw new LzmaDataErrorException("LZMA match exceeds chunk boundary.");
+            if (rep0 < 0 || rep0 >= p)
+                throw new LzmaDataErrorException("Invalid match distance.");
+
+            // The fast copy may write up to 7 bytes past the match; allow it
+            // only where those bytes are still inside this call's output
+            // region, which later symbols overwrite. Near the end of the
+            // region, and without an exact size (.lzma end-marker decoding,
+            // whose region end is soft), take the exact copy.
+            if (exactSize && len + 8 <= end - p)
+                CopyMatchFast(ref win, p, rep0, len);
+            else
+                CopyMatch(output, dictStart + p, rep0, len);
+            p += len;
         }
 
-        outPos = pos;
+        rangeDecoder.SetState(rc.Range, rc.Code, rc.Pos);
+        outPos = dictStart + p;
         _state = state;
         _rep0 = rep0;
-        _rep1 = rep1;
-        _rep2 = rep2;
-        _rep3 = rep3;
         return false;
+    }
+
+    /// <summary>
+    /// Copies a match of <paramref name="len"/> bytes at distance
+    /// <paramref name="dist"/> (0-based), writing up to 7 bytes past its end.
+    /// </summary>
+    /// <remarks>
+    /// Most LZMA matches are a few bytes long, where a span copy's call and
+    /// length dispatch cost more than the copy itself. With the source at least
+    /// 8 bytes behind the destination, each 8-byte word is fully written before
+    /// any later word reads it, so word copies reproduce the byte-by-byte result.
+    /// Closer (overlapping) sources are copied byte by byte or filled. The caller
+    /// guarantees the overshoot lies inside the region being decoded.
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void CopyMatchFast(ref byte outRef, int pos, int dist, int len)
+    {
+        int src = pos - dist - 1;
+        if (dist >= 7)
+        {
+            int i = 0;
+            do
+            {
+                Unsafe.WriteUnaligned(ref Unsafe.Add(ref outRef, pos + i),
+                    Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref outRef, src + i)));
+                i += 8;
+            } while (i < len);
+        }
+        else if (dist == 0)
+        {
+            // Run-length: repeat the previous byte
+            Unsafe.InitBlockUnaligned(ref Unsafe.Add(ref outRef, pos), Unsafe.Add(ref outRef, src), (uint)len);
+        }
+        else
+        {
+            for (int i = 0; i < len; i++)
+                Unsafe.Add(ref outRef, pos + i) = Unsafe.Add(ref outRef, src + i);
+        }
     }
 
     /// <summary>
     /// Copies a match of <paramref name="len"/> bytes at distance <paramref name="dist"/>
     /// (0-based: 0 = previous byte) inside the output buffer, handling overlap.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void CopyMatch(Span<byte> output, int pos, int dist, int len)
     {
         int src = pos - dist - 1;
@@ -397,39 +637,33 @@ internal sealed class LzmaDecoder
         }
     }
 
-    private int DecodeLength(ref RangeDecoder rc, ushort[] lenProbs, int posState)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int DecodeLength(ref Rc rc, ref byte input, ref ushort lenRoot, int posState)
     {
-        ref ushort lenRoot = ref MemoryMarshal.GetArrayDataReference(lenProbs);
-
-        if (rc.DecodeBit(ref lenRoot) == 0) // kLenChoice == 0
+        if (Bit(ref rc, ref input, ref lenRoot) == 0) // kLenChoice == 0
         {
             // Low
-            return (int)rc.DecodeBitTree(
+            return (int)BitTree(ref rc, ref input,
                 ref Unsafe.Add(ref lenRoot, kLenLow + (posState << LzmaConstants.kNumLowLenBits)),
-                LzmaConstants.kNumLowLenBits);
+                1u << LzmaConstants.kNumLowLenBits) - (1 << LzmaConstants.kNumLowLenBits);
         }
-        if (rc.DecodeBit(ref Unsafe.Add(ref lenRoot, kLenChoice2)) == 0)
+        if (Bit(ref rc, ref input, ref Unsafe.Add(ref lenRoot, kLenChoice2)) == 0)
         {
             // Mid
-            return LzmaConstants.kNumLowLenSymbols
-                + (int)rc.DecodeBitTree(
+            return LzmaConstants.kNumLowLenSymbols - (1 << LzmaConstants.kNumMidLenBits)
+                + (int)BitTree(ref rc, ref input,
                     ref Unsafe.Add(ref lenRoot, kLenMid + (posState << LzmaConstants.kNumMidLenBits)),
-                    LzmaConstants.kNumMidLenBits);
+                    1u << LzmaConstants.kNumMidLenBits);
         }
         // High
-        return LzmaConstants.kNumLowLenSymbols + LzmaConstants.kNumMidLenSymbols
-            + (int)rc.DecodeBitTree(ref Unsafe.Add(ref lenRoot, kLenHigh), LzmaConstants.kNumHighLenBits);
+        return LzmaConstants.kNumLowLenSymbols + LzmaConstants.kNumMidLenSymbols - (1 << LzmaConstants.kNumHighLenBits)
+            + (int)BitTree(ref rc, ref input, ref Unsafe.Add(ref lenRoot, kLenHigh),
+                1u << LzmaConstants.kNumHighLenBits);
     }
 
-    private int DecodeDistSlot(ref RangeDecoder rc, int lenToPosState)
-    {
-        return (int)rc.DecodeBitTree(
-            ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(_posSlotCoders),
-                lenToPosState * LzmaConstants.kNumPosSlots),
-            LzmaConstants.kNumPosSlotBits);
-    }
-
-    private int DecodeDistance(ref RangeDecoder rc, int distSlot)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int DecodeDistance(ref Rc rc, ref byte input,
+        ref ushort probs, int distSlot)
     {
         if (distSlot < LzmaConstants.kStartPosModelIndex)
             return distSlot;
@@ -441,18 +675,14 @@ internal sealed class LzmaDecoder
         {
             // Use position-specific bit tree
             int offset = (int)dist - distSlot - 1;
-            dist += rc.DecodeReverseBitTree(
-                ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(_posSpecProbs), offset),
-                numDirectBits);
+            dist += ReverseBitTree(ref rc, ref input, ref Unsafe.Add(ref probs, kPosSpec + offset), numDirectBits);
         }
         else
         {
             // Direct bits + alignment bits
-            dist += rc.DecodeDirectBits(numDirectBits - LzmaConstants.kNumAlignBits)
+            dist += DirectBits(ref rc, ref input, numDirectBits - LzmaConstants.kNumAlignBits)
                      << LzmaConstants.kNumAlignBits;
-            dist += rc.DecodeReverseBitTree(
-                ref MemoryMarshal.GetArrayDataReference(_alignProbs),
-                LzmaConstants.kNumAlignBits);
+            dist += ReverseBitTree(ref rc, ref input, ref Unsafe.Add(ref probs, kAlign), LzmaConstants.kNumAlignBits);
         }
 
         return (int)dist;

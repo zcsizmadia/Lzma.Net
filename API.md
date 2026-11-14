@@ -280,11 +280,12 @@ public XzDecompressStream(Stream stream, XzDecompressOptions? options, bool leav
 | `threads` | `int` | Decoder threads: `0` = all CPUs, `1` = single-threaded (default), `N` = up to N threads. |
 | `leaveOpen` | `bool` | If `true`, the underlying stream is not closed on dispose. |
 
-When `threads > 1`, XZ blocks are read sequentially but decoded in parallel
-(synchronous `Read` path). Parallelism applies per XZ block, so multi-block
-streams are required to benefit; up to `threads` decoded blocks are buffered
-in memory at a time, so peak memory use grows with the thread count and block
-size.
+When `threads > 1`, XZ blocks are read sequentially but decoded in parallel, in
+both the synchronous and asynchronous read paths: up to `threads` blocks decode
+at once, and the next one starts as soon as the oldest is handed out.
+Parallelism applies per XZ block, so multi-block streams are required to
+benefit; up to `threads` + 1 decoded blocks are held in memory at a time, so
+peak memory use grows with the thread count and block size.
 
 **Exceptions:**
 
@@ -544,7 +545,7 @@ Configuration for XZ decompression.
 |----------|------|---------|-------------|
 | `Threads` | `int` | `1` | `0` = all CPUs, `1` = single-threaded, `N` = up to N threads. Parallelism applies per XZ block. |
 | `MaxOutputSize` | `long` | `long.MaxValue` | Maximum total decompressed bytes before `LzmaMemoryLimitException` is thrown. Enforced **before** any allocation — protects against decompression bombs. For `XzSeekableStream`, applies per block. |
-| `Progress` | `IProgress<long>?` | `null` | Reports cumulative decompressed bytes, once per decoded block (or batch in parallel mode). |
+| `Progress` | `IProgress<long>?` | `null` | Reports cumulative decompressed bytes, once per decoded block. |
 
 Used by `XzCompressor.Decompress(data, options)`, `new XzDecompressStream(stream, options, leaveOpen)`, and `XzSeekableStream`.
 

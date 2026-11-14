@@ -30,8 +30,8 @@ public sealed class XzDecompressOptions
 
     /// <summary>
     /// Optional progress sink. Reports the cumulative number of uncompressed
-    /// bytes decoded so far, once per decoded XZ block (or batch of blocks in
-    /// parallel mode). Reports are made from the reading thread.
+    /// bytes decoded so far, once per decoded XZ block. Reports are made from the
+    /// reading thread.
     /// </summary>
     public IProgress<long>? Progress { get; set; }
 

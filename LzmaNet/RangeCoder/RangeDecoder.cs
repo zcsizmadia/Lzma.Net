@@ -28,6 +28,26 @@ internal ref struct RangeDecoder
     /// <summary>Current position in the input buffer.</summary>
     public readonly int Position => _pos;
 
+    /// <summary>The input buffer being decoded.</summary>
+    internal readonly ReadOnlySpan<byte> Buffer => _buffer;
+
+    /// <summary>Current range (for decoders that lift the state into locals).</summary>
+    internal readonly uint Range => _range;
+
+    /// <summary>Current code (for decoders that lift the state into locals).</summary>
+    internal readonly uint Code => _code;
+
+    /// <summary>
+    /// Stores state that a decoder lifted into locals (see <see cref="Range"/>,
+    /// <see cref="Code"/>, <see cref="Position"/>) back into this coder.
+    /// </summary>
+    internal void SetState(uint range, uint code, int pos)
+    {
+        _range = range;
+        _code = code;
+        _pos = pos;
+    }
+
     /// <summary>
     /// Initializes the range decoder from input data. Reads the initial 5 bytes.
     /// The first byte must be 0x00.
