@@ -21,8 +21,8 @@ Percentages are relative to the xz CLI at the same thread count.
 
 | Implementation | Config | MB/s | % of xz | Ratio | Size | Alloc |
 |---|---|---:|---:|---:|---:|---:|
-| **LzmaNet** | 1T defaults | 2.8 | 82% | 23.5% | 49,851,064 | 507 MB |
-| **LzmaNet** | 64T defaults | 18.2 | 83% | 23.5% | 49,851,064 | 859 MB |
+| **LzmaNet** | 1T defaults | 2.9 | 85% | 23.5% | 49,873,480 | 635 MB |
+| **LzmaNet** | 64T defaults | 18.8 | 86% | 23.5% | 49,873,480 | 667 MB |
 | xz CLI — *baseline* | 1T defaults | 3.4 | 100% | 23.2% | 49,211,276 | n/a |
 | xz CLI — *baseline* | 64T defaults | 21.9 | 100% | 23.4% | 49,495,408 | n/a |
 
@@ -33,10 +33,10 @@ deterministically and independently, so only the degree of parallelism differs.
 
 | Implementation | Config | 24 MiB blocks MB/s | % of xz | 1 MiB blocks MB/s | % of xz |
 |---|---|---:|---:|---:|---:|
-| **LzmaNet** | 1T | 106.3 | 80% | 94.8 | 79% |
-| **LzmaNet** | 64T | 619.0 | 108% | **1,832.8** | **143%** |
-| xz CLI — *baseline* | 1T | 133.6 | 100% | 120.5 | 100% |
-| xz CLI — *baseline* | 64T | 573.7 | 100% | 1,284.7 | 100% |
+| **LzmaNet** | 1T | 106.8 | 80% | 95.4 | 79% |
+| **LzmaNet** | 64T | 621.6 | 107% | **1,483.6** | **110%** |
+| xz CLI — *baseline* | 1T | 133.6 | 100% | 120.6 | 100% |
+| xz CLI — *baseline* | 64T | 580.5 | 100% | 1,349.3 | 100% |
 
 ## Synthetic 16 MB — patterns + random bytes
 
@@ -44,12 +44,12 @@ deterministically and independently, so only the degree of parallelism differs.
 
 | Implementation | Config | MB/s | % of xz | Ratio | Size | Alloc |
 |---|---|---:|---:|---:|---:|---:|
-| **LzmaNet** | 1T defaults | 13.0 | 118% | 22.9% | 3,846,384 | 49 MB |
-| **LzmaNet** | 64T defaults | 12.8 | 117% | 22.9% | 3,846,384 | 60 MB |
-| **LzmaNet** | 64T BlockSize=1MiB | 130.8 | 177% | 22.6% | 3,797,780 | 82 MB |
-| xz CLI — *baseline* | 1T defaults | 11.0 | 100% | 22.9% | 3,843,916 | n/a |
+| **LzmaNet** | 1T defaults | 13.2 | 121% | 22.9% | 3,846,384 | 49 MB |
+| **LzmaNet** | 64T defaults | 13.4 | 123% | 22.9% | 3,846,384 | 60 MB |
+| **LzmaNet** | 64T BlockSize=1MiB | 117.8 | 165% | 22.6% | 3,797,780 | 82 MB |
+| xz CLI — *baseline* | 1T defaults | 10.9 | 100% | 22.9% | 3,843,916 | n/a |
 | xz CLI — *baseline* | 64T defaults | 10.9 | 100% | 22.9% | 3,843,924 | n/a |
-| xz CLI — *baseline* | 64T --block-size=1MiB | 73.8 | 100% | 22.6% | 3,792,704 | n/a |
+| xz CLI — *baseline* | 64T --block-size=1MiB | 71.5 | 100% | 22.6% | 3,792,704 | n/a |
 
 Neither implementation parallelizes 16 MB at default block sizes (a single block has
 nothing to split); with matched 1 MiB blocks both scale.
@@ -58,10 +58,10 @@ nothing to split); with matched 1 MiB blocks both scale.
 
 | Implementation | Config | 24 MiB blocks MB/s | % of xz | 1 MiB blocks MB/s | % of xz |
 |---|---|---:|---:|---:|---:|
-| **LzmaNet** | 1T | 133.6 | 87% | 133.8 | 81% |
-| **LzmaNet** | 64T | 130.7 | 91% | 1,061.3 | 128% |
-| xz CLI — *baseline* | 1T | 153.8 | 100% | 166.2 | 100% |
-| xz CLI — *baseline* | 64T | 144.0 | 100% | 829.4 | 100% |
+| **LzmaNet** | 1T | 132.9 | 85% | 134.6 | 81% |
+| **LzmaNet** | 64T | 124.3 | 82% | 1,038.8 | 117% |
+| xz CLI — *baseline* | 1T | 156.6 | 100% | 166.4 | 100% |
+| xz CLI — *baseline* | 64T | 151.4 | 100% | 888.9 | 100% |
 
 ## Incompressible 32 MB — random bytes
 
@@ -69,19 +69,19 @@ nothing to split); with matched 1 MiB blocks both scale.
 
 | Implementation | Config | MB/s | % of xz | Ratio | Alloc |
 |---|---|---:|---:|---:|---:|
-| **LzmaNet** | 1T defaults | 8.5 | 266% | 100.0% | 308 MB |
-| **LzmaNet** | 64T defaults | 16.8 | 400% | 100.0% | 407 MB |
+| **LzmaNet** | 1T defaults | 8.6 | 269% | 100.0% | 308 MB |
+| **LzmaNet** | 64T defaults | 16.1 | 374% | 100.0% | 407 MB |
 | xz CLI — *baseline* | 1T defaults | 3.2 | 100% | 100.0% | n/a |
-| xz CLI — *baseline* | 64T defaults | 4.2 | 100% | 100.0% | n/a |
+| xz CLI — *baseline* | 64T defaults | 4.3 | 100% | 100.0% | n/a |
 
 ### Decompression (shared xz-produced references)
 
 | Implementation | Config | 24 MiB blocks MB/s | % of xz | 1 MiB blocks MB/s | % of xz |
 |---|---|---:|---:|---:|---:|
-| **LzmaNet** | 1T | 5,192.9 | 550% | 6,817.1 | 578% |
-| **LzmaNet** | 64T | 2,257.8 | 408% | 1,940.6 | 251% |
-| xz CLI — *baseline* | 1T | 943.6 | 100% | 1,178.7 | 100% |
-| xz CLI — *baseline* | 64T | 553.1 | 100% | 772.6 | 100% |
+| **LzmaNet** | 1T | 5,432.0 | 545% | 7,079.5 | 587% |
+| **LzmaNet** | 64T | 2,403.9 | 441% | 2,359.8 | 305% |
+| xz CLI — *baseline* | 1T | 996.5 | 100% | 1,207.0 | 100% |
+| xz CLI — *baseline* | 64T | 545.7 | 100% | 772.9 | 100% |
 
 Incompressible data is stored in uncompressed LZMA2 chunks, so decoding is close
 to a memory copy for the in-process library; the xz CLI is bounded by pipe I/O.
@@ -96,16 +96,16 @@ same socket.
 
 | Preset | LzmaNet time | LzmaNet size | xz time | xz size | Size vs xz | Speed vs xz |
 |---:|---:|---:|---:|---:|---:|---:|
-| 0 | 12.3 s | 61,421,856 | 9.5 s | 62,587,880 | −1.9% | 77% |
-| 1 | 12.5 s | 59,325,644 | 10.7 s | 58,416,876 | +1.6% | 85% |
-| 2 | 16.3 s | 57,532,272 | 15.2 s | 56,717,256 | +1.4% | 93% |
-| 3 | 24.1 s | 56,382,684 | 22.6 s | 55,754,164 | +1.1% | 94% |
-| 4 | 51.2 s | 52,042,056 | 36.2 s | 52,120,204 | −0.1% | 71% |
-| 5 | 62.1 s | 50,402,892 | 50.1 s | 49,978,320 | +0.8% | 81% |
-| 6 | 69.1 s | 49,851,064 | 58.2 s | 49,211,276 | +1.3% | 84% |
-| 7 | 74.0 s | 49,462,724 | 63.4 s | 48,934,844 | +1.1% | 86% |
-| 8 | 80.2 s | 49,062,632 | 67.4 s | 48,787,284 | +0.6% | 84% |
-| 9 | 83.0 s | 49,010,452 | 68.3 s | 48,755,320 | +0.5% | 82% |
+| 0 | 11.1 s | 61,421,856 | 9.5 s | 62,587,880 | −1.9% | 85% |
+| 1 | 11.7 s | 59,325,644 | 10.7 s | 58,416,876 | +1.6% | 91% |
+| 2 | 15.9 s | 57,532,272 | 15.2 s | 56,717,256 | +1.4% | 95% |
+| 3 | 23.3 s | 56,382,684 | 22.6 s | 55,754,164 | +1.1% | 97% |
+| 4 | 47.7 s | 52,061,740 | 36.2 s | 52,120,204 | −0.1% | 76% |
+| 5 | 59.9 s | 50,421,956 | 50.1 s | 49,978,320 | +0.9% | 84% |
+| 6 | 68.7 s | 49,873,480 | 58.2 s | 49,211,276 | +1.3% | 85% |
+| 7 | 72.0 s | 49,470,204 | 63.4 s | 48,934,844 | +1.1% | 88% |
+| 8 | 77.9 s | 49,073,412 | 67.4 s | 48,787,284 | +0.6% | 86% |
+| 9 | 80.8 s | 49,028,588 | 68.3 s | 48,755,320 | +0.6% | 84% |
 
 Decoding speed does not depend on the preset: LzmaNet decodes every level's
 `xz -N` output at 70–73% of xz's single-threaded speed in this setup.
@@ -116,13 +116,13 @@ One timed run each (these are slow by design).
 
 | Implementation | Config | MB/s | % of xz | Ratio | Size | Alloc |
 |---|---|---:|---:|---:|---:|---:|
-| **LzmaNet** | preset 9, 1T | 2.4 | 83% | 23.1% | 49,010,452 | 1,379 MB |
-| **LzmaNet** | preset 9, 64T | 2.5 | 83% | 23.1% | 49,010,452 | 1,593 MB |
+| **LzmaNet** | preset 9, 1T | 2.5 | 86% | 23.1% | 49,028,588 | 1,379 MB |
+| **LzmaNet** | preset 9, 64T | 2.5 | 83% | 23.1% | 49,028,588 | 1,593 MB |
 | xz CLI — *baseline* | -9, 1T | 2.9 | 100% | 23.0% | 48,755,320 | n/a |
 | xz CLI — *baseline* | -9, 64T | 3.0 | 100% | 23.0% | 48,772,064 | n/a |
 
 **Ratio parity**: LzmaNet's preset-9 output is within 0.6% of `xz -9`'s size on
-real-world data, at ~83% of its speed. Preset 9 gains nothing from threads at
+real-world data, at ~85% of its speed. Preset 9 gains nothing from threads at
 this input size — its default 128 MB blocks leave little to parallelize on
 212 MB (use a smaller `BlockSize` to trade a little ratio for scaling).
 
@@ -157,8 +157,8 @@ produce.
 ## Key Takeaways
 
 - **Compression ratio**: every preset follows xz's parameters and lands within **−1.9% to +1.6%** of `xz -N`'s output size on Silesia (preset 9: within 0.6%). The default preset 6 compresses Silesia to 23.5% (xz: 23.2%).
-- **Compression speed**: 71–94% of native xz single-threaded on Silesia depending on the preset (82% at the default), 83% at 64 threads. On repetitive data (the 16 MB synthetic scenario) LzmaNet is faster than xz: 118% at the default preset, 177% with matched 1 MiB blocks at 64 threads.
-- **Decompression**: single-threaded, native xz decodes real-world data about 1.25× faster (LzmaNet 79–80% on Silesia). Multi-threaded, LzmaNet is faster: **143% of xz** on 1 MiB-block Silesia (1.8 GB/s), 108% with xz's default 24 MiB blocks.
+- **Compression speed**: 76–97% of native xz single-threaded on Silesia depending on the preset (85% at the default), 86% at 64 threads. On repetitive data (the 16 MB synthetic scenario) LzmaNet is faster than xz: 121% at the default preset, 165% with matched 1 MiB blocks at 64 threads.
+- **Decompression**: single-threaded, native xz decodes real-world data about 1.25× faster (LzmaNet 79–80% on Silesia). Multi-threaded, LzmaNet is faster: **110% of xz** on 1 MiB-block Silesia (1.5 GB/s; this figure varies ±10% between runs, up to 1.8 GB/s), 107% with xz's default 24 MiB blocks.
 - **Incompressible data**: LzmaNet detects expanding chunks early and stores them raw — 2.7–4× faster than xz to compress, and **multi-GB/s to decompress** in-process (stored blocks decode as memcpy + CLMUL CRC).
 - **Memory**: the Alloc column shows the throughput trades — parallel modes allocate roughly one block's working set per in-flight encoder, and the BT4 tables of presets 4–9 are large (like xz's).
 - **Interoperability**: every decompression figure above is LzmaNet decoding files produced by the native xz encoder, byte-verified.

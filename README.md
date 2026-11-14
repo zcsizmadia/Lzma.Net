@@ -39,14 +39,14 @@ Quick summary — [Silesia corpus](https://sun.aei.polsl.pl/~sdeor/index.php?pag
 
 | | Compress | % of xz | Decompress | % of xz | Ratio |
 |---|---:|---:|---:|---:|---:|
-| **LzmaNet** (preset 6, 1 thread) | 2.8 MB/s | 82% | 106.3 MB/s | 80% | 23.5% |
-| **LzmaNet** (preset 6, 64 threads) | 18.2 MB/s | 83% | **1,832.8 MB/s** | **143%** | 23.5% |
-| **LzmaNet** (preset 9, 1 thread) | 2.4 MB/s | 83% | — | — | 23.1% |
+| **LzmaNet** (preset 6, 1 thread) | 2.9 MB/s | 85% | 106.8 MB/s | 80% | 23.5% |
+| **LzmaNet** (preset 6, 64 threads) | 18.8 MB/s | 86% | **1,483.6 MB/s** | **110%** | 23.5% |
+| **LzmaNet** (preset 9, 1 thread) | 2.5 MB/s | 86% | — | — | 23.1% |
 | xz CLI (preset 6, 1 thread) — *baseline* | 3.4 MB/s | 100% | 133.6 MB/s | 100% | 23.2% |
-| xz CLI (preset 6, 64 threads) — *baseline* | 21.9 MB/s | 100% | 1,284.7 MB/s | 100% | 23.4% |
+| xz CLI (preset 6, 64 threads) — *baseline* | 21.9 MB/s | 100% | 1,349.3 MB/s | 100% | 23.4% |
 | xz CLI (-9, 1 thread) — *baseline* | 2.9 MB/s | 100% | — | — | 23.0% |
 
-Every preset uses xz's own parameters and architecture (fast-mode parser at 0–3, BT4 + price-based optimal parsing at 4–9), and LzmaNet's output stays within about 1.6% of `xz -N`'s size at every level, at 71–94% of xz's single-threaded compression speed (faster than xz on repetitive data). Native xz decodes about 1.25× faster single-threaded; with multiple threads LzmaNet decodes multi-block files faster than xz.
+Every preset uses xz's own parameters and architecture (fast-mode parser at 0–3, BT4 + price-based optimal parsing at 4–9), and LzmaNet's output stays within about 1.6% of `xz -N`'s size at every level, at 76–97% of xz's single-threaded compression speed (faster than xz on repetitive data). Native xz decodes about 1.25× faster single-threaded; with multiple threads LzmaNet decodes multi-block files faster than xz.
 
 ## Installation
 
