@@ -16,13 +16,13 @@ dotnet build -c Release
 dotnet test -c Release
 
 # Run tests on a single TFM (faster iteration)
-dotnet test -c Release --framework net10.0
+dotnet test -c Release --framework net11.0
 
-# Run benchmarks (not in solution, net10.0 only)
+# Run benchmarks (not in solution, net11.0 only)
 dotnet run --project bench/LzmaNet.Bench -c Release
 ```
 
-The SDK is .NET 10 preview. All three commands run across `net8.0`, `net9.0`, and `net10.0` targets.
+The SDK is .NET 11. In CI, the tests run across the `net8.0`, `net10.0`, and `net11.0` targets; locally only `net11.0` is built.
 The library also builds `netstandard2.0` and `netstandard2.1` (locally and in CI)
 for consumers that are not on .NET 8+; see **Portable targets** below.
 
@@ -48,7 +48,7 @@ LzmaNet.Tests/                    # TUnit tests
 LzmaNet.Tests.Portable20/         # Same tests, run against the netstandard2.0 asset
 LzmaNet.Tests.Portable21/         # Same tests, run against the netstandard2.1 asset
 LzmaNet.Tests.NetFx/              # Targeted suite on .NET Framework (not in the solution)
-LzmaNet.Benchmark/                # Benchmark (not in solution, net10.0 only)
+LzmaNet.Benchmark/                # Benchmark (not in solution, net11.0 only)
 ```
 
 ## Key Conventions
@@ -87,7 +87,7 @@ This is a core design principle. Always prefer:
 ### Portable targets
 
 The library ships `netstandard2.0` and `netstandard2.1` alongside
-`net8.0`/`net9.0`/`net10.0`, so it runs where .NET 8 is not available. Four rules
+`net8.0`/`net10.0`/`net11.0`, so it runs where .NET 8 is not available. Four rules
 keep those targets working.
 
 - **Anything newer than the target goes through `Compatibility/`.** APIs added
@@ -132,12 +132,12 @@ runs exercise the shims.
 One test, `DecompressStream_ReadAsync_UsesUnderlyingAsyncIo`, is excluded from
 the netstandard2.0 run. That build cannot see `Stream.ReadAsync(Memory<byte>, …)`
 and calls the `byte[]` overload, whose .NET default ends in a synchronous read —
-visible only because the test host runs that asset on .NET 10. Real consumers of
+visible only because the test host runs that asset on .NET 11. Real consumers of
 it are on .NET Framework, where the array overload is itself the async path.
 
 `LzmaNet.Tests.NetFx` runs a targeted suite on .NET Framework 4.7.2, which is
 what the netstandard2.0 asset actually ships to — the Portable20 project runs
-that same asset on .NET 10, a different BCL. It is **not** in the solution,
+that same asset on .NET 11, a different BCL. It is **not** in the solution,
 because net472 cannot run on the Linux and macOS CI jobs; the
 `test (.NET Framework)` workflow job invokes it, and locally:
 

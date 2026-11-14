@@ -63,8 +63,8 @@ jobs:
           # Testing in CI runs on all supported .NET versions to ensure compatibility.
           dotnet-version: |
             8.0.x
-            9.0.x
             10.0.x
+            11.0.x
 
       - name: Restore
         run: dotnet restore
@@ -87,8 +87,8 @@ jobs:
         with:
           dotnet-version: |
             8.0.x
-            9.0.x
             10.0.x
+            11.0.x
 
       - name: Restore
         run: dotnet restore
@@ -116,11 +116,11 @@ jobs:
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: |
-            10.0.x
+            11.0.x
 
       # The netstandard2.0 asset is the one .NET Framework consumers get, and
       # this is the only job that runs it on that runtime — the portable test
-      # projects execute it on .NET 10, which is a different BCL. Windows-only,
+      # projects execute it on .NET 11, which is a different BCL. Windows-only,
       # and outside the solution, so it needs its own invocation.
       - name: Test the netstandard2.0 asset on .NET Framework
         run: dotnet test LzmaNet.Tests.NetFx/LzmaNet.Tests.NetFx.csproj -c Release
@@ -136,7 +136,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 11.0.x
 
       - name: Pack
         run: dotnet pack LzmaNet -c Release -o nupkgs

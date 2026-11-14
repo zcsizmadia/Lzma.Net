@@ -5,8 +5,8 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <DefaultTargetFrameworks>net8.0;net9.0;net10.0</DefaultTargetFrameworks>
-    <DefaultTargetFramework>net10.0</DefaultTargetFramework>
+    <DefaultTargetFrameworks>net8.0;net10.0;net11.0</DefaultTargetFrameworks>
+    <DefaultTargetFramework>net11.0</DefaultTargetFramework>
 
     <!-- Portable targets for consumers that are not on .NET 8+. They have no
          hardware intrinsics, so they are always built locally too: a break

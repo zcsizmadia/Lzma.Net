@@ -3,7 +3,7 @@
 [![Build](https://github.com/zcsizmadia/Lzma.Net/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/zcsizmadia/Lzma.Net/actions/workflows/build.yml)
 [![NuGet](https://img.shields.io/nuget/v/Lzma.Net?logo=nuget)](https://www.nuget.org/packages/Lzma.Net)
 [![Downloads](https://img.shields.io/nuget/dt/Lzma.Net?logo=nuget)](https://www.nuget.org/packages/Lzma.Net)
-![.NET](https://img.shields.io/badge/.NET-8.0%20%7C%209.0%20%7C%2010.0%20%7C%20netstandard2.0%20%7C%20netstandard2.1-512BD4?logo=dotnet)
+![.NET](https://img.shields.io/badge/.NET-8.0%20%7C%2010.0%20%7C%2011.0%20%7C%20netstandard2.0%20%7C%20netstandard2.1-512BD4?logo=dotnet)
 [![License](https://img.shields.io/github/license/zcsizmadia/Lzma.Net)](LICENSE)
 
 A **native C# implementation** of the XZ/LZMA2/LZMA compression format. No native binaries, no P/Invoke, no liblzma dependency — just pure managed C# code that runs anywhere .NET runs.
