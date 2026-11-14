@@ -71,20 +71,20 @@ public class OptimalAndFormatTests
     }
 
     [Test]
-    public async Task OptimalParser_ImprovesRatioOverLazy()
+    public async Task OptimalParser_ImprovesRatioOverFastMode()
     {
         byte[] original = MakeTextLikeData(2 * 1024 * 1024);
 
-        var lazyProps = LzmaEncoderProperties.FromPreset(9);
-        lazyProps.DictionarySize = TestDictSize;
-        lazyProps.UseBinaryTree = false;
-        lazyProps.OptimalParse = false;
+        var fastProps = LzmaEncoderProperties.FromPreset(9);
+        fastProps.DictionarySize = TestDictSize;
+        fastProps.UseBinaryTree = false;
+        fastProps.OptimalParse = false;
         var optProps = LzmaEncoderProperties.FromPreset(9);
         optProps.DictionarySize = TestDictSize;
 
-        long lazySize = EncodeLzma2(original, lazyProps);
+        long fastSize = EncodeLzma2(original, fastProps);
         long optSize = EncodeLzma2(original, optProps);
-        await Assert.That(optSize < lazySize).IsTrue();
+        await Assert.That(optSize < fastSize).IsTrue();
     }
 
     [Test]

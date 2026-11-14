@@ -26,9 +26,10 @@ internal sealed class LzmaEncoderProperties
     public int CutValue { get; set; } = 32;
 
     /// <summary>
-    /// Matches at least this long are emitted immediately; shorter candidates go
-    /// through lazy lookahead or optimal parsing. Higher values improve ratio at
-    /// the cost of encode speed. Default: 64.
+    /// Matches at least this long are emitted immediately, and the hash-chain
+    /// walk stops at the first one (liblzma's nice_len); shorter candidates go
+    /// through the parser. Higher values improve ratio at the cost of encode
+    /// speed. Default: 64.
     /// </summary>
     public int NiceLength { get; set; } = 64;
 
@@ -40,18 +41,14 @@ internal sealed class LzmaEncoderProperties
     public bool UseBinaryTree { get; set; }
 
     /// <summary>
-    /// Use price-based optimal parsing instead of lazy matching: symbol choices
-    /// are made by dynamic programming over estimated range-coder bit costs.
-    /// Best combined with <see cref="UseBinaryTree"/>. Default: false.
+    /// Use price-based optimal parsing (xz's normal mode): symbol choices are
+    /// made by dynamic programming over estimated range-coder bit costs. Best
+    /// combined with <see cref="UseBinaryTree"/>. When false, the encoder uses
+    /// liblzma's fast-mode parser (one-step lookahead with rep-match and
+    /// distance heuristics, no pricing), as xz does for presets 0-3.
+    /// Default: false.
     /// </summary>
     public bool OptimalParse { get; set; }
-
-    /// <summary>
-    /// Use liblzma's fast-mode parser (one-step lookahead with rep-match and
-    /// distance heuristics, no pricing) with a hash-chain finder that stops at
-    /// <see cref="NiceLength"/>. xz uses it for presets 0-3. Default: false.
-    /// </summary>
-    public bool FastParse { get; set; }
 
     /// <summary>
     /// Gets the properties byte encoding lc, lp, pb.
@@ -86,29 +83,18 @@ internal sealed class LzmaEncoderProperties
         {
             // Presets 0-3: xz's fast mode, with xz's parameters (lzma_lzma_preset):
             // hash chain, nice_len 128/128/273/273, search depth 4/8/24/48.
-            props.FastParse = true;
             props.NiceLength = level <= 1 ? 128 : LzmaConstants.kMatchMaxLen;
             props.CutValue = level switch { 0 => 4, 1 => 8, 2 => 24, _ => 48 };
         }
         else
         {
-            // Presets 4-6: hash chain with lazy one-step lookahead below
-            // NiceLength. (7-9 override both values below.)
-            props.CutValue = level switch { 4 or 5 => 32, _ => 64 };
-            props.NiceLength = level <= 5 ? 32 : 64;
-        }
-
-        // High presets use the binary-tree match finder with optimal parsing,
-        // matching how xz positions its presets (ratio over speed).
-        if (level >= 7)
-        {
+            // Presets 4-9: xz's normal mode — the binary-tree match finder with
+            // price-based optimal parsing — with xz's nice_len (16/32/64 for
+            // 4/5/6+) and the search depth liblzma derives for a binary tree
+            // when the preset leaves it at 0 ("auto"): 16 + nice_len / 2.
             props.UseBinaryTree = true;
             props.OptimalParse = true;
-
-            // Search depth as liblzma derives it for a binary tree when the
-            // preset leaves depth at 0 ("auto"): 16 + nice_len / 2, i.e. 48 at
-            // nice_len 64, against 128 before. On the full Silesia corpus at
-            // preset 9 that is ~5% faster for +0.04% output size.
+            props.NiceLength = level switch { 4 => 16, 5 => 32, _ => 64 };
             props.CutValue = 16 + props.NiceLength / 2;
         }
 
@@ -131,7 +117,6 @@ internal sealed class LzmaEncoderProperties
             props.NiceLength = LzmaConstants.kMatchMaxLen;
             props.UseBinaryTree = true;
             props.OptimalParse = true;
-            props.FastParse = false;
         }
 
         // Standard lc/lp/pb

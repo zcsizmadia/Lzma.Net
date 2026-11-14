@@ -17,7 +17,8 @@ namespace LzmaNet.Lzma;
 
 /// <summary>
 /// LZMA1 encoder. Compresses data using LZ77 + range coding with adaptive probability models.
-/// Uses hash chain match finding with lazy matching for encoding decisions.
+/// Presets 0-3 parse with liblzma's fast mode over a hash chain (EncodeChunkFast),
+/// 4-9 with price-based optimal parsing over a binary tree (EncodeChunkOptimal).
 /// </summary>
 internal sealed class LzmaEncoder : IDisposable
 {
@@ -111,7 +112,7 @@ internal sealed class LzmaEncoder : IDisposable
         _matchFinder = props.UseBinaryTree
             ? new BinaryTreeMatchFinder(props.DictionarySize, props.MatchMaxLen, props.CutValue)
             : new HashChainMatchFinder(props.DictionarySize, props.MatchMaxLen, props.CutValue,
-                props.FastParse ? props.NiceLength : int.MaxValue);
+                props.NiceLength);
 
         ResetState();
     }
@@ -190,135 +191,9 @@ internal sealed class LzmaEncoder : IDisposable
     public long EncodeChunk(ReadOnlySpan<byte> block, int chunkStart, int chunkLen, Stream output,
                             long sizeLimit = long.MaxValue)
     {
-        if (_props.OptimalParse)
-            return EncodeChunkOptimal(block, chunkStart, chunkLen, output, sizeLimit);
-        if (_props.FastParse)
-            return EncodeChunkFast(block, chunkStart, chunkLen, output, sizeLimit);
-
-        var rc = new RangeEncoder(output);
-        // The range encoder's cache mechanism (initialized with _cache=0, _cacheSize=1)
-        // naturally outputs the 0x00 init byte during the first ShiftLow call.
-        // Do NOT call WriteInitByte here - it would produce a duplicate 0x00 byte.
-
-        int pos = chunkStart;
-        int chunkEnd = chunkStart + chunkLen;
-
-        // With a size limit set, also abort once the chunk is demonstrably
-        // expanding (output has caught up with input after a warm-up window):
-        // incompressible chunks are then abandoned after ~16 KB instead of
-        // being fully range-coded and thrown away.
-        bool limited = sizeLimit != long.MaxValue;
-
-        int niceLen = Math.Min(_props.NiceLength, LzmaConstants.kMatchMaxLen);
-
-        // Lazy matching: when a match candidate is found at pos, the next
-        // position is also evaluated; if it has a strictly longer match, a
-        // literal is emitted instead and the pos+1 candidate carries over to
-        // the next iteration (naturally chaining into multi-step laziness).
-        // Invariant at the top of the loop when pendingValid: the match finder
-        // sits at pos with its hash already inserted by FindMatches.
-        bool pendingValid = false;
-        int pendingLen = 0, pendingDist = 0, pendingRepIndex = -1;
-        bool pendingIsRep = false;
-
-        while (pos < chunkEnd)
-        {
-            if (ShouldAbandonChunk(rc.BytesWritten, sizeLimit, limited, pos, chunkStart))
-            {
-                // Incompressible: give up early, but keep feeding the dictionary
-                // so later chunks can still match against this data.
-                _matchFinder.Skip(chunkEnd - pos);
-                return -1;
-            }
-
-            int posState = pos & _posMask;
-            int bestLen, bestDist, repIndex;
-            bool isRep;
-
-            if (pendingValid)
-            {
-                bestLen = pendingLen;
-                bestDist = pendingDist;
-                isRep = pendingIsRep;
-                repIndex = pendingRepIndex;
-                pendingValid = false;
-            }
-            else
-            {
-                if (_matchFinder.Available < 2)
-                {
-                    // Encode remaining as literals
-                    EmitLiteralAt(rc, block, ref pos, posState);
-                    continue;
-                }
-
-                EvaluatePosition(block, pos, chunkEnd, out bestLen, out bestDist, out isRep, out repIndex);
-            }
-
-            if (bestLen < LzmaConstants.kMatchMinLen || (bestLen == LzmaConstants.kMatchMinLen && !isRep))
-            {
-                // Literal
-                rc.EncodeBit(ref _isMatch[(_state << LzmaConstants.kNumPosStatesBitsMax) + posState], 0);
-                EncodeLiteral(rc, block, block[pos], pos > 0 ? block[pos - 1] : (byte)0, pos);
-                _matchFinder.MovePos();
-                pos++;
-                continue;
-            }
-
-            // Lazy one-step lookahead: matches at or beyond niceLen are taken
-            // immediately; short ones are only kept if pos+1 has nothing longer.
-            bool deferred = false;
-            bool lookedAhead = false;
-            if (bestLen < niceLen && chunkEnd - pos >= 2)
-            {
-                _matchFinder.MovePos(); // to pos+1 (hash at pos already inserted)
-                lookedAhead = true;
-
-                if (_matchFinder.Available >= 2)
-                {
-                    EvaluatePosition(block, pos + 1, chunkEnd,
-                        out int nextLen, out int nextDist, out bool nextIsRep, out int nextRepIndex);
-                    if (nextLen > bestLen)
-                    {
-                        // Emit a literal at pos; carry the pos+1 candidate over.
-                        rc.EncodeBit(ref _isMatch[(_state << LzmaConstants.kNumPosStatesBitsMax) + posState], 0);
-                        EncodeLiteral(rc, block, block[pos], pos > 0 ? block[pos - 1] : (byte)0, pos);
-                        pos++;
-                        pendingLen = nextLen;
-                        pendingDist = nextDist;
-                        pendingIsRep = nextIsRep;
-                        pendingRepIndex = nextRepIndex;
-                        pendingValid = true;
-                        deferred = true;
-                    }
-                }
-            }
-
-            if (deferred)
-                continue;
-
-            // Emit the match/rep at pos. If lookahead advanced the finder to
-            // pos+1 (with its hash inserted when Available allowed), skip one
-            // position less.
-            int skip = lookedAhead ? bestLen - 1 : bestLen;
-            if (isRep)
-            {
-                rc.EncodeBit(ref _isMatch[(_state << LzmaConstants.kNumPosStatesBitsMax) + posState], 1);
-                rc.EncodeBit(ref _isRep[_state], 1);
-                EncodeRepMatch(rc, repIndex, bestLen, posState);
-            }
-            else
-            {
-                rc.EncodeBit(ref _isMatch[(_state << LzmaConstants.kNumPosStatesBitsMax) + posState], 1);
-                rc.EncodeBit(ref _isRep[_state], 0);
-                EncodeMatch(rc, bestDist, bestLen, posState);
-            }
-            _matchFinder.Skip(skip);
-            pos += bestLen;
-        }
-
-        rc.FlushData();
-        return rc.BytesWritten;
+        return _props.OptimalParse
+            ? EncodeChunkOptimal(block, chunkStart, chunkLen, output, sizeLimit)
+            : EncodeChunkFast(block, chunkStart, chunkLen, output, sizeLimit);
     }
 
     // Match lists for the fast parser's one-step lookahead (the current list
@@ -548,57 +423,6 @@ internal sealed class LzmaEncoder : IDisposable
         rc.EncodeBit(ref _isMatch[(_state << LzmaConstants.kNumPosStatesBitsMax) + posState], 1);
         rc.EncodeBit(ref _isRep[_state], 0);
         EncodeMatch(rc, dist, len, posState);
-    }
-
-    /// <summary>
-    /// Evaluates the best match candidate (rep or normal) at the given position.
-    /// Runs FindMatches, which inserts the position into the hash/chain tables.
-    /// Lengths are capped at the chunk boundary: a single symbol must not span
-    /// two LZMA2 chunks.
-    /// </summary>
-    private void EvaluatePosition(ReadOnlySpan<byte> block, int pos, int chunkEnd,
-        out int bestLen, out int bestDist, out bool isRep, out int repIndex)
-    {
-        bestLen = 1;
-        bestDist = 0;
-        isRep = false;
-        repIndex = -1;
-
-        int maxLen = Math.Min(LzmaConstants.kMatchMaxLen, chunkEnd - pos);
-        int rep0Len = GetRepMatchLen(block, pos, _rep0, maxLen);
-        int rep1Len = GetRepMatchLen(block, pos, _rep1, maxLen);
-        int rep2Len = GetRepMatchLen(block, pos, _rep2, maxLen);
-        int rep3Len = GetRepMatchLen(block, pos, _rep3, maxLen);
-
-        int bestRepLen = Math.Max(Math.Max(rep0Len, rep1Len), Math.Max(rep2Len, rep3Len));
-
-        if (bestRepLen >= LzmaConstants.kMatchMinLen)
-        {
-            isRep = true;
-            bestLen = bestRepLen;
-            if (bestRepLen == rep0Len) { repIndex = 0; bestDist = _rep0; }
-            else if (bestRepLen == rep1Len) { repIndex = 1; bestDist = _rep1; }
-            else if (bestRepLen == rep2Len) { repIndex = 2; bestDist = _rep2; }
-            else { repIndex = 3; bestDist = _rep3; }
-        }
-
-        int numMatches = _matchFinder.FindMatches(
-            _matchDistances.AsSpan(), _matchLengths.AsSpan(),
-            Math.Min(16, _matchDistances.Length));
-
-        for (int i = 0; i < numMatches; i++)
-        {
-            // The finder may see past the chunk boundary (its window is fed the
-            // whole block); a symbol must not, so clamp the usable length.
-            int len = Math.Min(_matchLengths[i], maxLen);
-            if (len > bestLen ||
-                (len == bestLen && !isRep && _matchDistances[i] < bestDist))
-            {
-                bestLen = len;
-                bestDist = _matchDistances[i];
-                isRep = false;
-            }
-        }
     }
 
     private static int GetRepMatchLen(ReadOnlySpan<byte> block, int pos, int dist, int maxLen)

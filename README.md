@@ -21,7 +21,7 @@ A **native C# implementation** of the XZ/LZMA2/LZMA compression format. No nativ
 - **Random access** — `XzSeekableStream` seeks anywhere in the uncompressed data and decodes only the blocks it needs, using the XZ index
 - **BCJ/Delta filters** — encode *and* decode support for x86, ARM, ARM64, ARM-Thumb, PowerPC, SPARC, IA-64, RISC-V, and Delta filters; BCJ dramatically improves ratio on executables (`XzCompressOptions.Filter`)
 - **Decompression-bomb protection** — `XzDecompressOptions.MaxOutputSize` rejects oversized output claims before any allocation happens
-- **Presets 0–9** — matching `xz` CLI compression levels and dictionary sizes; presets 7–9 use a BT4 match finder with price-based **optimal parsing** for near-xz ratios
+- **Presets 0–9** — matching `xz`'s levels: the same dictionary sizes, match finders and parser settings. Presets 0–3 use xz's fast-mode parser over a hash chain; 4–9 use a BT4 match finder with price-based **optimal parsing**, for output within ~1% of `xz` at every level
 - **Extreme mode** — equivalent to `xz -e`, spends more CPU time for better compression
 - **Legacy `.lzma` format** — `LzmaAloneCompressStream` / `LzmaAloneDecompressStream` for the LZMA-alone format (7-Zip / `xz --format=lzma` compatible, including unknown-size streams)
 - **Progress reporting** — `IProgress<long>` hooks on both compression and decompression options
@@ -187,7 +187,7 @@ All tuning knobs are exposed through the `XzCompressOptions` class:
 
 | Property | Type | Default | Description |
 |---|---|---|---|
-| `Preset` | `int` | `6` | Compression level 0–9. Higher = smaller output, more CPU/memory. Presets 0–3 use xz's fast-mode parser, 4–6 use lazy matching, 7–9 use BT4 + optimal parsing. |
+| `Preset` | `int` | `6` | Compression level 0–9. Higher = smaller output, more CPU/memory. Presets 0–3 use xz's fast-mode parser, 4–9 use BT4 + optimal parsing (as xz does). |
 | `Extreme` | `bool` | `false` | When `true`, spends significantly more CPU to improve ratio. Equivalent to `xz -e`. |
 | `Threads` | `int` | `1` | `0` = all CPUs, `1` = single-threaded, `N` = N threads. |
 | `CheckType` | `XzCheckType` | `Crc64` | Integrity check: `None`, `Crc32`, `Crc64`, or `Sha256`. |
@@ -226,7 +226,7 @@ LzmaAloneCompressStream / LzmaAloneDecompressStream   (legacy .lzma format)
        └─ LZMA2 codec      (chunked wrapper over LZMA)
             └─ LZMA codec  (LZ77 + adaptive range coding)
                  ├─ Match finders: HC4 (hash-chain) and BT4 (binary tree)
-                 ├─ Parsers: xz fast mode / lazy / price-based optimal
+                 ├─ Parsers: xz fast mode / price-based optimal
                  ├─ Range encoder / decoder
                  └─ CRC32 / CRC64 integrity checks
 ```

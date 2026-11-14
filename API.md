@@ -351,7 +351,7 @@ Configuration object for XZ compression. All properties have sensible defaults m
 public int Preset { get; set; } = 6;
 ```
 
-Compression level from 0 (fastest, largest) to 9 (slowest, smallest). Controls dictionary size, match-finder choice, and parsing strategy: presets 0–3 use xz's fast-mode parser and 4–6 lazy matching (both with the hash-chain finder), and 7–9 use the BT4 binary-tree finder with price-based optimal parsing for near-xz compression ratios at substantially lower speed.
+Compression level from 0 (fastest, largest) to 9 (slowest, smallest). Controls dictionary size, match-finder choice, and parsing strategy: as in xz, presets 0–3 use the fast-mode parser with the hash-chain finder, and 4–9 use the BT4 binary-tree finder with price-based optimal parsing (smaller output at substantially lower speed). Output size is within about 1% of `xz` at the same level.
 
 | Preset | Dictionary Size |
 |--------|----------------|

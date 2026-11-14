@@ -1076,17 +1076,31 @@ public class CoverageTests
         for (int level = 0; level <= 3; level++)
         {
             var p = LzmaEncoderProperties.FromPreset(level);
-            await Assert.That(p.FastParse).IsTrue();
-            await Assert.That(p.UseBinaryTree).IsFalse();
             await Assert.That(p.OptimalParse).IsFalse();
+            await Assert.That(p.UseBinaryTree).IsFalse();
             await Assert.That(p.DictionarySize).IsEqualTo(dict[level]);
             await Assert.That(p.NiceLength).IsEqualTo(nice[level]);
             await Assert.That(p.CutValue).IsEqualTo(depth[level]);
             await Assert.That(p.MatchMaxLen).IsEqualTo(273);
         }
 
-        await Assert.That(LzmaEncoderProperties.FromPreset(4).FastParse).IsFalse();
-        await Assert.That(LzmaEncoderProperties.FromPreset(0, extreme: true).FastParse).IsFalse();
+        await Assert.That(LzmaEncoderProperties.FromPreset(0, extreme: true).OptimalParse).IsTrue();
+    }
+
+    [Test]
+    public async Task EncoderProperties_Presets4To9_UseXzNormalMode()
+    {
+        // xz's lzma_lzma_preset for levels 4-9: normal mode (BT4 + optimal
+        // parser), nice_len 16/32/64..., depth auto = 16 + nice_len / 2.
+        for (int level = 4; level <= 9; level++)
+        {
+            var p = LzmaEncoderProperties.FromPreset(level);
+            int nice = level == 4 ? 16 : level == 5 ? 32 : 64;
+            await Assert.That(p.UseBinaryTree).IsTrue();
+            await Assert.That(p.OptimalParse).IsTrue();
+            await Assert.That(p.NiceLength).IsEqualTo(nice);
+            await Assert.That(p.CutValue).IsEqualTo(16 + nice / 2);
+        }
     }
 
     [Test]
