@@ -30,10 +30,16 @@ public sealed class XzDecompressOptions
 
     /// <summary>
     /// Optional progress sink. Reports the cumulative number of uncompressed
-    /// bytes decoded so far, once per decoded XZ block. Reports are made from the
+    /// bytes decoded so far, once per decoded XZ block (per LZMA2 chunk for blocks
+    /// decoded through the streaming window). Reports are made from the
     /// reading thread.
     /// </summary>
     public IProgress<long>? Progress { get; set; }
+
+    // Internal so tests can force the streaming paths; worth making public (e.g. MaxBlockBufferSize).
+    // Blocks without filters that decode to more than this (or are unsized) stream through a
+    // dictionary-sized window instead of one buffer per block.
+    internal long StreamingThreshold { get; set; } = 256L << 20;
 
     /// <summary>
     /// Returns a default options instance (single-threaded, no output limit).

@@ -58,20 +58,96 @@ internal static class XzBlock
         unpaddedSize = 0;
         uncompressedSize = 0;
 
-        // Read block header size byte (0 = index indicator)
+        byte[]? header = ReadBlockHeaderBytes(stream);
+        if (header == null)
+            return false; // Index indicator
+        ReadBlockBodyToBuffer(stream, header, checkType, out outputBuffer, out outputLength,
+            out unpaddedSize, out uncompressedSize, maxOutputSize);
+        return true;
+    }
+
+    /// <summary>
+    /// Reads a block header (size byte through CRC32), or returns null at the index indicator.
+    /// The CRC32 is verified by the caller's parser.
+    /// </summary>
+    internal static byte[]? ReadBlockHeaderBytes(Stream stream)
+    {
         int headerSizeByte = stream.ReadByte();
         if (headerSizeByte < 0)
             throw new LzmaDataErrorException("Unexpected end of XZ stream.");
         if (headerSizeByte == 0)
-            return false; // Index indicator
+            return null;
+        byte[] header = new byte[(headerSizeByte + 1) * 4];
+        header[0] = (byte)headerSizeByte;
+        ReadExact(stream, header.AsSpan(1));
+        return header;
+    }
 
-        int headerSize = (headerSizeByte + 1) * 4;
-        byte[] headerBuf = ArrayPool<byte>.Shared.Rent(headerSize);
-        try
+    /// <summary>
+    /// The header fields that decide how a block is decoded. Sizes are -1 when absent.
+    /// </summary>
+    internal readonly record struct BlockHeaderInfo(
+        long CompressedSize, long UncompressedSize, int DictSize, bool HasFilters);
+
+    /// <summary>
+    /// Validates a block header (CRC32, flags, filter chain, padding) and returns its fields.
+    /// Unlike <see cref="ReadBlockBodyToBuffer"/>, sizes above 2 GiB are accepted here.
+    /// </summary>
+    internal static BlockHeaderInfo ParseBlockHeader(byte[] header)
+    {
+        int headerDataLen = header.Length - 4;
+        var data = header.AsSpan(0, headerDataLen);
+        if (!Crc32.Verify(data, header.AsSpan(headerDataLen, 4)))
+            throw new LzmaDataErrorException("XZ block header CRC32 mismatch.");
+        byte flags = header[1];
+        if ((flags & 0x3C) != 0)
+            throw new LzmaDataErrorException("Reserved bits set in XZ block flags.");
+        int pos = 2;
+        long comp = (flags & 0x40) != 0 ? ToVli(ReadMultibyteInt(data, ref pos)) : -1;
+        long uncomp = (flags & 0x80) != 0 ? ToVli(ReadMultibyteInt(data, ref pos)) : -1;
+        if (comp == 0)
+            throw new LzmaDataErrorException("XZ block compressed size is zero.");
+        int numFilters = (flags & 0x03) + 1;
+        ulong id = 0;
+        byte[] props = [];
+        for (int f = 0; f < numFilters; f++)
         {
-            headerBuf[0] = (byte)headerSizeByte;
-            ReadExact(stream, headerBuf.AsSpan(1, headerSize - 1));
+            id = ReadMultibyteInt(data, ref pos);
+            ulong size = ReadMultibyteInt(data, ref pos);
+            if (size > (ulong)(headerDataLen - pos))
+                throw new LzmaDataErrorException("XZ filter properties exceed the block header.");
+            props = data.Slice(pos, (int)size).ToArray();
+            pos += (int)size;
+            if (!FilterFactory.IsSupported(id))
+                throw new LzmaException($"Unsupported XZ filter: 0x{id:X}.");
+        }
+        if (id != XzConstants.FilterIdLzma2)
+            throw new LzmaException("Last filter in XZ block must be LZMA2.");
+        if (props.Length != 1)
+            throw new LzmaDataErrorException("Invalid LZMA2 filter properties size.");
+        foreach (byte b in data[pos..])
+            if (b != 0) throw new LzmaDataErrorException("Non-zero padding in XZ block header.");
+        return new BlockHeaderInfo(comp, uncomp, Lzma2Encoder.DecodeDictSize(props[0]), numFilters > 1);
+    }
 
+    private static long ToVli(ulong value) => value <= long.MaxValue / 4
+        ? (long)value
+        : throw new LzmaDataErrorException("XZ block size field is out of range.");
+
+    /// <summary>
+    /// Decodes the rest of a block whose header was already read into <paramref name="headerBuf"/>.
+    /// </summary>
+    internal static void ReadBlockBodyToBuffer(Stream stream, byte[] headerBuf, int checkType,
+        out byte[]? outputBuffer, out int outputLength,
+        out long unpaddedSize, out long uncompressedSize,
+        long maxOutputSize)
+    {
+        outputBuffer = null;
+        outputLength = 0;
+        unpaddedSize = 0;
+        uncompressedSize = 0;
+        int headerSize = headerBuf.Length;
+        {
             // Verify CRC32 of header
             int headerDataLen = headerSize - 4;
             if (!Crc32.Verify(headerBuf.AsSpan(0, headerDataLen),
@@ -186,7 +262,7 @@ internal static class XzBlock
                     hasUncompressedSize ? uncompSizeField : -1,
                     bcjFilters, checkType, out outputBuffer, out outputLength,
                     out uncompressedSize, out unpaddedSize, headerSize, maxOutputSize);
-                return true; // Already handled output, padding, and check
+                return; // Already handled output, padding, and check
             }
 
             try
@@ -253,12 +329,82 @@ internal static class XzBlock
                     ArrayPool<byte>.Shared.Return(compressedRented);
             }
         }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(headerBuf);
-        }
+    }
 
-        return true;
+    /// <summary>
+    /// Copies a block whose header was already read into a stream positioned at 0
+    /// (header included), for <see cref="ReadBlockToBuffer"/>. Sized blocks are copied
+    /// whole. Unsized blocks are copied chunk by chunk until the end marker, or until
+    /// more than <paramref name="stopAbove"/> bytes (compressed or uncompressed) were seen; then
+    /// <c>Complete</c> is false and the stream holds the chunks read so far.
+    /// </summary>
+    internal static async ValueTask<(MemoryStream Raw, bool Complete, long UncompressedSoFar)> ReadRawBlockBodyAsync(
+        Stream stream, byte[] header, BlockHeaderInfo info, int checkType, long stopAbove,
+        bool async, CancellationToken cancellationToken)
+    {
+        int checkSize = XzConstants.GetCheckSize(checkType);
+        // Presize from the header, but never trust it for more than a few MiB up front.
+        long declared = info.CompressedSize >= 0 ? header.Length + info.CompressedSize + 3 + checkSize : 0;
+        var raw = new MemoryStream((int)Math.Min(declared, 4 << 20));
+        try
+        {
+            raw.Write(header, 0, header.Length);
+            long compressed;
+            long uncompressed;
+            if (info.CompressedSize >= 0)
+            {
+                if (declared > int.MaxValue - 64)
+                    throw new LzmaDataErrorException("XZ block is too large for this decoder.");
+                compressed = info.CompressedSize;
+                if (async)
+                    await CopyExactAsync(stream, raw, (int)compressed, cancellationToken).ConfigureAwait(false);
+                else
+                    CopyExact(stream, raw, (int)compressed);
+                uncompressed = info.UncompressedSize >= 0
+                    ? info.UncompressedSize
+                    : GetLzma2UncompressedSize(raw.GetBuffer().AsSpan(header.Length, (int)compressed), stopAbove);
+            }
+            else
+            {
+                uncompressed = async
+                    ? (await CopyLzma2StreamAsync(stream, raw, cancellationToken, stopAbove).ConfigureAwait(false)).UncompressedSize
+                    : CopyLzma2Stream(stream, raw, stopAbove);
+                compressed = raw.Length - header.Length;
+                if (uncompressed < 0) // stopped early: too large to buffer
+                    return (Rewind(raw, header.Length), false, uncompressed);
+            }
+
+            int tail = (int)((4 - (compressed & 3)) & 3) + checkSize;
+            if (async)
+                await CopyExactAsync(stream, raw, tail, cancellationToken).ConfigureAwait(false);
+            else
+                CopyExact(stream, raw, tail);
+            bool complete = uncompressed <= stopAbove; // a sized block that decodes too large is streamed
+            return (Rewind(raw, complete ? 0 : header.Length), complete, uncompressed);
+        }
+        catch
+        {
+            raw.Dispose();
+            throw;
+        }
+    }
+
+    private static MemoryStream Rewind(MemoryStream raw, int position)
+    {
+        raw.Position = position;
+        return raw;
+    }
+
+    internal static async ValueTask<byte[]?> ReadBlockHeaderBytesAsync(Stream stream, CancellationToken cancellationToken)
+    {
+        byte[] first = new byte[1];
+        await ReadExactAsync(stream, first, cancellationToken).ConfigureAwait(false);
+        if (first[0] == 0)
+            return null;
+        byte[] header = new byte[(first[0] + 1) * 4];
+        header[0] = first[0];
+        await ReadExactAsync(stream, header.AsMemory(1), cancellationToken).ConfigureAwait(false);
+        return header;
     }
 
     /// <summary>
@@ -808,9 +954,10 @@ internal static class XzBlock
         }
     }
 
-    private static long CopyLzma2Stream(Stream input, Stream output)
+    private static long CopyLzma2Stream(Stream input, Stream output, long stopAbove = long.MaxValue)
     {
         long uncompressedSize = 0;
+        long copied = 0; // LZMA2 bytes copied: bounds memory even when chunks claim tiny outputs
         Span<byte> sizes = stackalloc byte[4];
         while (true)
         {
@@ -828,6 +975,9 @@ internal static class XzBlock
                 int dataSize = (high << 8 | low) + 1;
                 uncompressedSize = AddUncompressedSize(uncompressedSize, dataSize);
                 CopyExact(input, output, dataSize);
+                copied += 3 + dataSize;
+                if (uncompressedSize > stopAbove || copied > stopAbove)
+                    return -1;
                 continue;
             }
 
@@ -844,11 +994,14 @@ internal static class XzBlock
             if (control >= 0xC0)
                 output.WriteByte((byte)ReadRequiredByte(input, "Truncated LZMA2 properties."));
             CopyExact(input, output, compressedSize);
+            copied += 6 + compressedSize;
+            if (uncompressedSize > stopAbove || copied > stopAbove)
+                return -1; // stopped at a chunk boundary; the caller streams the rest
         }
     }
 
     private static async ValueTask<(long CompressedSize, long UncompressedSize)> CopyLzma2StreamAsync(
-        Stream input, Stream output, CancellationToken cancellationToken)
+        Stream input, Stream output, CancellationToken cancellationToken, long stopAbove = long.MaxValue)
     {
         long compressedSize = 0;
         long uncompressedSize = 0;
@@ -873,6 +1026,8 @@ internal static class XzBlock
                 uncompressedSize = AddUncompressedSize(uncompressedSize, dataSize);
                 await CopyExactAsync(input, output, dataSize, cancellationToken).ConfigureAwait(false);
                 compressedSize += dataSize;
+                if (uncompressedSize > stopAbove || compressedSize > stopAbove)
+                    return (compressedSize, -1);
                 continue;
             }
 
@@ -896,10 +1051,12 @@ internal static class XzBlock
             await CopyExactAsync(input, output, chunkCompressedSize, cancellationToken)
                 .ConfigureAwait(false);
             compressedSize += chunkCompressedSize;
+            if (uncompressedSize > stopAbove || compressedSize > stopAbove)
+                return (compressedSize, -1); // stopped at a chunk boundary
         }
     }
 
-    private static long GetLzma2UncompressedSize(ReadOnlySpan<byte> data)
+    private static long GetLzma2UncompressedSize(ReadOnlySpan<byte> data, long stopAbove = long.MaxValue)
     {
         int pos = 0;
         long uncompressedSize = 0;
@@ -921,6 +1078,8 @@ internal static class XzBlock
                 EnsureAvailable(data, pos, dataSize, "Truncated LZMA2 uncompressed chunk.");
                 pos += dataSize;
                 uncompressedSize = AddUncompressedSize(uncompressedSize, dataSize);
+                if (uncompressedSize > stopAbove)
+                    return uncompressedSize;
                 continue;
             }
 
@@ -940,6 +1099,8 @@ internal static class XzBlock
             EnsureAvailable(data, pos, compressedSize, "Truncated LZMA2 compressed chunk.");
             pos += compressedSize;
             uncompressedSize = AddUncompressedSize(uncompressedSize, chunkUncompressedSize);
+            if (uncompressedSize > stopAbove)
+                return uncompressedSize;
         }
 
         throw new LzmaDataErrorException("LZMA2 end marker is missing.");

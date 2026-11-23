@@ -46,6 +46,174 @@ public sealed class XzDecompressStream : Stream
     private readonly List<(long unpaddedSize, long uncompressedSize)> _blockRecords = new();
     // Parallel mode: blocks being decoded on the thread pool, in stream order.
     private readonly Queue<Task<XzBlock.BlockBufferResult>> _inFlight = new();
+    // Blocks without filters that are unsized, or that decode to more than this,
+    // are decoded chunk by chunk through a dictionary-sized window (serially)
+    // instead of into one buffer. Unsized blocks up to this size still decode in
+    // parallel in multi-threaded mode.
+    private readonly long _streamingThreshold;
+    private XzStreamingBlockDecoder? _streaming;
+    private byte[]? _spareWindow;           // the last streamed block's window, reused
+    private bool _blockBufferPooled = true; // false while _blockBuffer is the streaming window
+    // Parallel mode: a block to stream once the blocks before it are handed out.
+    // Prefix holds its bytes already read (positioned at the first unread one), or is null.
+    private (byte[] Header, XzBlock.BlockHeaderInfo Info, MemoryStream? Prefix)? _pendingStream;
+
+    // Set when reading ahead failed; the error was queued behind the blocks before it.
+    private bool _readAheadFailed;
+
+    /// <summary>
+    /// Reads the body of a block whose header was parsed, or, when the block must be
+    /// streamed, makes it <see cref="_pendingStream"/> (with any bytes already read)
+    /// and returns null. Blocks up to the threshold are always buffered whole, so
+    /// their check is verified before any of their data is handed out.
+    /// </summary>
+    private async ValueTask<MemoryStream?> ReadRawBlockOrPendAsync(byte[] header, XzBlock.BlockHeaderInfo info,
+        bool async, CancellationToken cancellationToken)
+    {
+        if (!info.HasFilters
+            && (info.UncompressedSize > _streamingThreshold || info.CompressedSize > _streamingThreshold))
+        {
+            _pendingStream = (header, info, null);
+            return null;
+        }
+        var (raw, complete, _) = await XzBlock.ReadRawBlockBodyAsync(_baseStream, header, info, _checkType,
+            info.HasFilters ? long.MaxValue : _streamingThreshold, async, cancellationToken).ConfigureAwait(false);
+        if (complete)
+            return raw;
+        _pendingStream = (header, info, raw); // turned out too large: stream it
+        return null;
+    }
+
+    private void StartPendingStream()
+    {
+        var pending = _pendingStream!.Value;
+        StartStreaming(pending.Header, pending.Info, pending.Prefix);
+    }
+
+    private void ReleaseBlockBuffer()
+    {
+        if (_blockBuffer != null && _blockBufferPooled)
+            ArrayPool<byte>.Shared.Return(_blockBuffer);
+        _blockBuffer = null;
+        _blockBufferPooled = true;
+    }
+
+    private void StartStreaming(byte[] header, XzBlock.BlockHeaderInfo info, MemoryStream? prefix)
+    {
+        Stream input = prefix == null ? _baseStream : new PrefixedStream(prefix, _baseStream);
+        _streaming = new XzStreamingBlockDecoder(input, header.Length, info, _checkType,
+            RemainingAllowance(), _spareWindow);
+        _spareWindow = null;
+    }
+
+    /// <summary>Hands out the next chunk of the streamed block, or finishes the block.</summary>
+    private async ValueTask StepStreamingAsync(bool async, CancellationToken cancellationToken)
+    {
+        var (start, length) = async
+            ? await _streaming!.NextChunkAsync(cancellationToken).ConfigureAwait(false)
+            : _streaming!.NextChunk();
+        if (length >= 0)
+        {
+            AddProduced(length);
+            _blockBuffer = _streaming.Window;
+            _blockBufferPooled = false;
+            _blockBufferPos = start;
+            _blockBufferLen = start + length;
+            return;
+        }
+        _blockRecords.Add((_streaming.UnpaddedSize, _streaming.UncompressedSize));
+        EndStreaming(keepWindow: true);
+    }
+
+    private void EndStreaming(bool keepWindow)
+    {
+        if (_streaming != null)
+        {
+            if (keepWindow)
+                _spareWindow = _streaming.Window;
+            _streaming.Dispose();
+            _streaming = null;
+        }
+        _pendingStream?.Prefix?.Dispose();
+        _pendingStream = null;
+    }
+
+    /// <summary>
+    /// Multi-threaded mode: reads block headers and raw blocks and starts decoding
+    /// them on the thread pool until <see cref="_threads"/> are in flight, the index
+    /// is reached, or a block must be streamed (it then waits in <see cref="_pendingStream"/>).
+    /// </summary>
+    private async ValueTask TopUpInFlightCore(bool async, CancellationToken cancellationToken)
+    {
+        while (_inFlight.Count < _threads && !_indexIndicatorSeen && _pendingStream == null && !_readAheadFailed)
+        {
+            MemoryStream? raw;
+            try
+            {
+                byte[]? header = async
+                    ? await XzBlock.ReadBlockHeaderBytesAsync(_baseStream, cancellationToken).ConfigureAwait(false)
+                    : XzBlock.ReadBlockHeaderBytes(_baseStream);
+                if (header == null)
+                {
+                    _indexIndicatorSeen = true;
+                    break;
+                }
+                raw = await ReadRawBlockOrPendAsync(header, XzBlock.ParseBlockHeader(header), async, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                // Report it in stream order: the blocks already decoding, and the one
+                // being handed out, are valid and must still reach the reader.
+                _readAheadFailed = true;
+                _inFlight.Enqueue(Task.FromException<XzBlock.BlockBufferResult>(e));
+                break;
+            }
+            if (raw == null)
+                break; // the block is streamed once the blocks before it are handed out
+            StartDecode(raw);
+        }
+    }
+
+    /// <summary>Reads a stream's leftover prefix, then the base stream.</summary>
+    private sealed class PrefixedStream(MemoryStream prefix, Stream rest) : Stream
+    {
+        public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+#if !NETSTANDARD2_0
+        public override int Read(Span<byte> buffer)
+#else
+        public int Read(Span<byte> buffer)
+#endif
+        {
+            int n = prefix.Read(buffer);
+            return n > 0 || buffer.Length == 0 ? n : rest.Read(buffer);
+        }
+        public override int ReadByte() { int b = prefix.ReadByte(); return b >= 0 ? b : rest.ReadByte(); }
+#if !NETSTANDARD2_0
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+#else
+        public ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+#endif
+        {
+            int n = prefix.Read(buffer.Span);
+            return n > 0 || buffer.Length == 0 ? new ValueTask<int>(n) : rest.ReadAsync(buffer, cancellationToken);
+        }
+        // The netstandard2.0 ReadAsync(Memory) polyfill reads through this overload.
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            int n = prefix.Read(buffer, offset, count);
+            return n > 0 || count == 0 ? Task.FromResult(n) : rest.ReadAsync(buffer, offset, count, cancellationToken);
+        }
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
 
     /// <summary>
     /// Initializes a new <see cref="XzDecompressStream"/> that reads compressed data
@@ -93,6 +261,7 @@ public sealed class XzDecompressStream : Stream
         opts.Validate();
         _threads = opts.ResolvedThreads;
         _maxOutputSize = opts.MaxOutputSize;
+        _streamingThreshold = opts.StreamingThreshold;
         _progress = opts.Progress;
         _leaveOpen = leaveOpen;
     }
@@ -163,7 +332,24 @@ public sealed class XzDecompressStream : Stream
 #endif
     {
         Portable.ThrowIfDisposed(_disposed, this);
+        _failure?.Throw();
+        try
+        {
+            return ReadCore(buffer);
+        }
+        catch (Exception e)
+        {
+            _failure = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e);
+            throw;
+        }
+    }
 
+    // A failed read leaves the input mid-block; later reads rethrow instead of
+    // resuming at the next block and returning data past the gap.
+    private System.Runtime.ExceptionServices.ExceptionDispatchInfo? _failure;
+
+    private int ReadCore(Span<byte> buffer)
+    {
         if (_allStreamsRead)
             return 0;
 
@@ -182,10 +368,13 @@ public sealed class XzDecompressStream : Stream
                 totalCopied += toCopy;
 
                 if (_blockBufferPos >= _blockBufferLen)
-                {
-                    ArrayPool<byte>.Shared.Return(_blockBuffer);
-                    _blockBuffer = null;
-                }
+                    ReleaseBlockBuffer();
+                continue;
+            }
+
+            if (_streaming != null)
+            {
+                StepStreamingAsync(async: false, default).GetAwaiter().GetResult();
                 continue;
             }
 
@@ -247,7 +436,10 @@ public sealed class XzDecompressStream : Stream
                 TopUpInFlight();
                 if (_inFlight.Count == 0)
                 {
-                    _allBlocksRead = true;
+                    if (_pendingStream != null)
+                        StartPendingStream(); // in order: earlier blocks are all handed out
+                    else
+                        _allBlocksRead = true;
                     continue;
                 }
 
@@ -268,15 +460,33 @@ public sealed class XzDecompressStream : Stream
                 continue;
             }
 
-            // Decompress next block directly into a pooled buffer.
-            if (!XzBlock.ReadBlockToBuffer(_baseStream, _checkType,
-                                           out byte[]? blockBuffer, out int blockLength,
-                                           out long unpaddedSize, out long uncompressedSize,
-                                           RemainingAllowance()))
+            byte[]? header = XzBlock.ReadBlockHeaderBytes(_baseStream);
+            if (header == null)
             {
                 _allBlocksRead = true;
                 continue;
             }
+            var info = XzBlock.ParseBlockHeader(header);
+            if (info.CompressedSize < 0 || info.UncompressedSize < 0
+                || (!info.HasFilters && (info.CompressedSize > _streamingThreshold || info.UncompressedSize > _streamingThreshold)))
+            {
+                // Missing sizes or a large block: buffer it up to the threshold, else stream it.
+                MemoryStream? raw = ReadRawBlockOrPendAsync(header, info, async: false, default).GetAwaiter().GetResult();
+                if (raw == null)
+                {
+                    StartPendingStream();
+                    continue;
+                }
+                var decoded = DecodeRawBlock(raw, _checkType, RemainingAllowance());
+                AcceptDecoded(decoded);
+                SetBlockBuffer(decoded);
+                continue;
+            }
+
+            // Decompress next block directly into a pooled buffer.
+            XzBlock.ReadBlockBodyToBuffer(_baseStream, header, _checkType,
+                out byte[]? blockBuffer, out int blockLength,
+                out long unpaddedSize, out long uncompressedSize, RemainingAllowance());
 
             AddProduced(uncompressedSize);
             _blockRecords.Add((unpaddedSize, uncompressedSize));
@@ -307,17 +517,7 @@ public sealed class XzDecompressStream : Stream
     /// for the slowest of a batch before it can be handed out.
     /// </remarks>
     private void TopUpInFlight()
-    {
-        while (_inFlight.Count < _threads && !_indexIndicatorSeen)
-        {
-            if (!XzBlock.ReadRawBlock(_baseStream, _checkType, out MemoryStream? raw))
-            {
-                _indexIndicatorSeen = true;
-                break;
-            }
-            StartDecode(raw!);
-        }
-    }
+        => TopUpInFlightCore(async: false, default).GetAwaiter().GetResult();
 
     private void StartDecode(MemoryStream raw)
     {
@@ -398,7 +598,21 @@ public sealed class XzDecompressStream : Stream
     {
         Portable.ThrowIfDisposed(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
+        _failure?.Throw();
+        try
+        {
+            return await ReadAsyncCoreUnlatched(buffer, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception e)
+        {
+            _failure = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e);
+            throw;
+        }
+    }
 
+    private async ValueTask<int> ReadAsyncCoreUnlatched(
+        Memory<byte> buffer, CancellationToken cancellationToken)
+    {
         if (_allStreamsRead)
             return 0;
 
@@ -418,10 +632,13 @@ public sealed class XzDecompressStream : Stream
                 totalCopied += toCopy;
 
                 if (_blockBufferPos >= _blockBufferLen)
-                {
-                    ArrayPool<byte>.Shared.Return(_blockBuffer);
-                    _blockBuffer = null;
-                }
+                    ReleaseBlockBuffer();
+                continue;
+            }
+
+            if (_streaming != null)
+            {
+                await StepStreamingAsync(async: true, cancellationToken).ConfigureAwait(false);
                 continue;
             }
 
@@ -482,7 +699,10 @@ public sealed class XzDecompressStream : Stream
                 await TopUpInFlightAsync(cancellationToken).ConfigureAwait(false);
                 if (_inFlight.Count == 0)
                 {
-                    _allBlocksRead = true;
+                    if (_pendingStream != null)
+                        StartPendingStream(); // in order: earlier blocks are all handed out
+                    else
+                        _allBlocksRead = true;
                     continue;
                 }
 
@@ -502,26 +722,23 @@ public sealed class XzDecompressStream : Stream
                 continue;
             }
 
-            XzBlock.BlockBufferResult block = await XzBlock.ReadBlockToBufferAsync(
-                _baseStream, _checkType, RemainingAllowance(), cancellationToken).ConfigureAwait(false);
-            if (!block.HasBlock)
+            byte[]? blockHeader = await XzBlock.ReadBlockHeaderBytesAsync(_baseStream, cancellationToken)
+                .ConfigureAwait(false);
+            if (blockHeader == null)
             {
                 _allBlocksRead = true;
                 continue;
             }
-
-            AddProduced(block.UncompressedSize);
-            _blockRecords.Add((block.UnpaddedSize, block.UncompressedSize));
-            if (block.Length > 0)
+            MemoryStream? raw = await ReadRawBlockOrPendAsync(blockHeader, XzBlock.ParseBlockHeader(blockHeader),
+                async: true, cancellationToken).ConfigureAwait(false);
+            if (raw == null)
             {
-                _blockBuffer = block.Buffer;
-                _blockBufferLen = block.Length;
-                _blockBufferPos = 0;
+                StartPendingStream();
+                continue;
             }
-            else if (block.Buffer != null)
-            {
-                ArrayPool<byte>.Shared.Return(block.Buffer);
-            }
+            XzBlock.BlockBufferResult block = DecodeRawBlock(raw, _checkType, RemainingAllowance());
+            AcceptDecoded(block);
+            SetBlockBuffer(block);
         }
 
         return totalCopied;
@@ -531,20 +748,8 @@ public sealed class XzDecompressStream : Stream
     /// Async counterpart of <see cref="TopUpInFlight"/>: the raw block reads are
     /// asynchronous, the decodes run on the thread pool.
     /// </summary>
-    private async ValueTask TopUpInFlightAsync(CancellationToken cancellationToken)
-    {
-        while (_inFlight.Count < _threads && !_indexIndicatorSeen)
-        {
-            MemoryStream? raw = await XzBlock.ReadRawBlockAsync(
-                _baseStream, _checkType, cancellationToken).ConfigureAwait(false);
-            if (raw == null)
-            {
-                _indexIndicatorSeen = true;
-                break;
-            }
-            StartDecode(raw);
-        }
-    }
+    private ValueTask TopUpInFlightAsync(CancellationToken cancellationToken)
+        => TopUpInFlightCore(async: true, cancellationToken);
 
     /// <summary>
     /// Tries to read a stream header, skipping any stream padding (null bytes).
@@ -667,11 +872,9 @@ public sealed class XzDecompressStream : Stream
         {
             if (disposing)
             {
-                if (_blockBuffer != null)
-                {
-                    ArrayPool<byte>.Shared.Return(_blockBuffer);
-                    _blockBuffer = null;
-                }
+                ReleaseBlockBuffer();
+                EndStreaming(keepWindow: false);
+                _spareWindow = null;
                 DrainInFlight();
                 if (!_leaveOpen)
                     _baseStream.Dispose();
