@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: 0BSD
 
+using System.Runtime.ExceptionServices;
+
 using LzmaNet.Compatibility;
 using LzmaNet.Lzma;
 using LzmaNet.Lzma2;
@@ -109,43 +111,65 @@ public sealed class XzCompressStream : Stream
     public void Write(ReadOnlySpan<byte> buffer)
 #endif
     {
-        Portable.ThrowIfDisposed(_disposed, this);
-        if (_finished)
-            throw new InvalidOperationException("Stream has been finalized.");
-
-        EnsureHeader();
-
-        CompactInput();
-        _inputBuffer.Write(buffer);
-
-        // Flush blocks when buffer exceeds block size
-        if (_threads == 1)
+        ThrowIfUnwritable();
+        try
         {
-            while (PendingInput >= _blockSize)
+            EnsureHeader();
+
+            CompactInput();
+            _inputBuffer.Write(buffer);
+
+            // Flush blocks when buffer exceeds block size
+            if (_threads == 1)
             {
-                FlushBlock();
+                while (PendingInput >= _blockSize)
+                {
+                    FlushBlock();
+                }
+            }
+            else
+            {
+                // Pipeline: start encoding each block as soon as it is complete;
+                // the in-flight bound blocks on (and writes out) the oldest block,
+                // overlapping writing with encoding.
+                while (PendingInput >= _blockSize)
+                {
+                    EnqueueBlock();
+                }
             }
         }
-        else
+        catch (Exception e)
         {
-            // Pipeline: start encoding each block as soon as it is complete;
-            // the in-flight bound blocks on (and writes out) the oldest block,
-            // overlapping writing with encoding.
-            while (PendingInput >= _blockSize)
-            {
-                EnqueueBlock();
-            }
+            _failure ??= ExceptionDispatchInfo.Capture(e);
+            throw;
         }
     }
 
-    /// <inheritdoc/>
+    // Set when a write fails or is cancelled. The output may then lack data
+    // the caller handed over, so Dispose leaves it unterminated (no index, no footer)
+    // instead of sealing it into a valid-looking .xz, and later writes rethrow it.
+    private ExceptionDispatchInfo? _failure;
+
+    private void ThrowIfUnwritable()
+    {
+        Portable.ThrowIfDisposed(_disposed, this);
+        if (_finished)
+            throw new InvalidOperationException("Stream has been finalized.");
+        _failure?.Throw();
+    }
+
+    /// <summary>
+    /// Flushes the base stream. Input is compressed in whole blocks, when a block fills
+    /// and on dispose, so data written since the last full block stays buffered: ending
+    /// a block on every flush would reset the dictionary each time.
+    /// </summary>
     public override void Flush()
     {
         Portable.ThrowIfDisposed(_disposed, this);
         _baseStream.Flush();
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc cref="Flush"/>
     public override async Task FlushAsync(CancellationToken cancellationToken)
     {
         Portable.ThrowIfDisposed(_disposed, this);
@@ -168,28 +192,34 @@ public sealed class XzCompressStream : Stream
         CancellationToken cancellationToken = default)
 #endif
     {
-        Portable.ThrowIfDisposed(_disposed, this);
-        if (_finished)
-            throw new InvalidOperationException("Stream has been finalized.");
-
-        await EnsureHeaderAsync(cancellationToken).ConfigureAwait(false);
-
-        CompactInput();
-        _inputBuffer.Write(buffer.Span);
-
-        if (_threads == 1)
+        ThrowIfUnwritable();
+        cancellationToken.ThrowIfCancellationRequested(); // nothing done yet: no need to fault
+        try
         {
-            while (PendingInput >= _blockSize)
+            await EnsureHeaderAsync(cancellationToken).ConfigureAwait(false);
+
+            CompactInput();
+            _inputBuffer.Write(buffer.Span);
+
+            if (_threads == 1)
             {
-                await FlushBlockAsync(cancellationToken).ConfigureAwait(false);
+                while (PendingInput >= _blockSize)
+                {
+                    await FlushBlockAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+            else
+            {
+                while (PendingInput >= _blockSize)
+                {
+                    await EnqueueBlockAsync(cancellationToken).ConfigureAwait(false);
+                }
             }
         }
-        else
+        catch (Exception e)
         {
-            while (PendingInput >= _blockSize)
-            {
-                await EnqueueBlockAsync(cancellationToken).ConfigureAwait(false);
-            }
+            _failure ??= ExceptionDispatchInfo.Capture(e);
+            throw;
         }
     }
 
@@ -477,14 +507,42 @@ public sealed class XzCompressStream : Stream
     {
         if (!_disposed)
         {
-            await FinalizeAsync(CancellationToken.None).ConfigureAwait(false);
-            _encoder?.Dispose();
-            _inputBuffer.Dispose();
-            if (!_leaveOpen)
-                await _baseStream.DisposeAsync().ConfigureAwait(false);
             _disposed = true;
+            try
+            {
+                if (_failure == null)
+                    await FinalizeAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            finally
+            {
+                AbandonInFlight();
+                _encoder?.Dispose();
+                _inputBuffer.Dispose();
+                if (!_leaveOpen)
+                    await _baseStream.DisposeAsync().ConfigureAwait(false);
+            }
         }
         GC.SuppressFinalize(this);
+    }
+
+    /// <summary>
+    /// Waits for encodes still in flight after a failure and drops their output,
+    /// so no worker outlives the stream.
+    /// </summary>
+    private void AbandonInFlight()
+    {
+        foreach (var task in _inFlight)
+        {
+            try
+            {
+                task.GetAwaiter().GetResult().Data.Dispose();
+            }
+            catch
+            {
+                // The stream already failed; this block's own error adds nothing.
+            }
+        }
+        _inFlight.Clear();
     }
 
     /// <inheritdoc/>
@@ -501,15 +559,25 @@ public sealed class XzCompressStream : Stream
     {
         if (!_disposed)
         {
+            _disposed = true;
             if (disposing)
             {
-                Finalize_();
-                _encoder?.Dispose();
-                _inputBuffer.Dispose();
-                if (!_leaveOpen)
-                    _baseStream.Dispose();
+                try
+                {
+                    if (_failure == null)
+                        Finalize_();
+                }
+                finally
+                {
+                    // Release the base stream even when finalizing failed, so the
+                    // caller can delete the partial output.
+                    AbandonInFlight();
+                    _encoder?.Dispose();
+                    _inputBuffer.Dispose();
+                    if (!_leaveOpen)
+                        _baseStream.Dispose();
+                }
             }
-            _disposed = true;
         }
         base.Dispose(disposing);
     }

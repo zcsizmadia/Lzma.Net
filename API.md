@@ -237,7 +237,7 @@ using (var xz = new XzCompressStream(output, opts))
 
 - `WriteAsync(ReadOnlyMemory<byte>, CancellationToken)` — writes and compresses data asynchronously
 - `WriteAsync(byte[], int, int, CancellationToken)` — array-based overload
-- `FlushAsync(CancellationToken)` — flushes pending blocks asynchronously
+- `FlushAsync(CancellationToken)` — flushes the underlying stream. Input is compressed in whole blocks (when a block fills, and on dispose), so data written since the last full block is not yet in the output
 - `DisposeAsync()` — finalizes the XZ stream and disposes resources asynchronously
 
 Use `await using` instead of `using` for async disposal:
