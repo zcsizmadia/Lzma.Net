@@ -64,6 +64,7 @@ internal sealed class Lzma2Decoder : IDisposable
         int outPos = 0;
         int dictStart = 0;
         bool sawEndMarker = false;
+        bool needDictReset = true; // liblzma: the first chunk must reset the dictionary
 
         while (inPos < span.Length)
         {
@@ -75,6 +76,11 @@ internal sealed class Lzma2Decoder : IDisposable
                 sawEndMarker = true;
                 break;
             }
+
+            if (control == 0x01 || control >= 0xE0)
+                needDictReset = false;
+            else if (needDictReset)
+                throw new LzmaDataErrorException("LZMA2 data does not start with a dictionary reset.");
 
             if (control == 0x01 || control == 0x02)
             {

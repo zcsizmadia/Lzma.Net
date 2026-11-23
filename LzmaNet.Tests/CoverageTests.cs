@@ -222,15 +222,14 @@ public class CoverageTests
     }
 
     [Test]
-    public async Task Lzma2Decoder_UncompressedChunk_NoDictReset()
+    public async Task Lzma2Decoder_UncompressedChunk_NoDictReset_Throws()
     {
+        // liblzma ("Compressed data is corrupt") rejects LZMA2 data whose first
+        // chunk does not reset the dictionary.
         byte[] data = [0x02, 0x00, 0x01, 0x58, 0x59, 0x00];
         byte[] output = new byte[100];
         using var decoder = new Lzma2Decoder(65536);
-        int written = decoder.Decode(data.AsMemory(), output);
-        await Assert.That(written).IsEqualTo(2);
-        await Assert.That(output[0]).IsEqualTo((byte)'X');
-        await Assert.That(output[1]).IsEqualTo((byte)'Y');
+        await Assert.That(() => decoder.Decode(data.AsMemory(), output)).Throws<LzmaDataErrorException>();
     }
 
     [Test]

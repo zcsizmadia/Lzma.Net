@@ -163,7 +163,24 @@ public sealed class XzDecompressStream : Stream
 #endif
     {
         Portable.ThrowIfDisposed(_disposed, this);
+        _failure?.Throw();
+        try
+        {
+            return ReadCore(buffer);
+        }
+        catch (Exception e)
+        {
+            _failure = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e);
+            throw;
+        }
+    }
 
+    // A failed read leaves the input mid-block; later reads rethrow instead of
+    // resuming at the next block and returning data past the gap.
+    private System.Runtime.ExceptionServices.ExceptionDispatchInfo? _failure;
+
+    private int ReadCore(Span<byte> buffer)
+    {
         if (_allStreamsRead)
             return 0;
 
@@ -398,7 +415,21 @@ public sealed class XzDecompressStream : Stream
     {
         Portable.ThrowIfDisposed(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
+        _failure?.Throw();
+        try
+        {
+            return await ReadAsyncCoreUnlatched(buffer, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception e)
+        {
+            _failure = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e);
+            throw;
+        }
+    }
 
+    private async ValueTask<int> ReadAsyncCoreUnlatched(
+        Memory<byte> buffer, CancellationToken cancellationToken)
+    {
         if (_allStreamsRead)
             return 0;
 
